@@ -1,0 +1,69 @@
+"""
+ReAct Agent 构建
+
+基于 LangChain create_agent 构建 ReAct 智能体，集成 SummarizationMiddleware
+"""
+from typing import Any, Sequence
+
+from langchain_core.tools import BaseTool
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain.agents import create_agent
+from langchain.agents.middleware import SummarizationMiddleware
+
+from app.core.agent.prompts.agent_prompt import AGENT_SYSTEM_PROMPT
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+SUMMARIZE_TRIGGER_MESSAGES = 40
+SUMMARIZE_KEEP_MESSAGES = 20
+
+
+def build_react_agent(
+    model: BaseChatModel,
+    tools: Sequence[BaseTool] | None = None,
+    prompt: str | None = None,
+    checkpointer: Any = None,
+    store: Any = None,
+) -> Any:
+    """
+    构建 ReAct Agent
+
+    Args:
+        model: LLM 模型实例
+        tools: 工具列表
+        prompt: 系统提示词（默认使用 AGENT_SYSTEM_PROMPT）
+        checkpointer: 状态持久化器
+        store: 长期记忆存储
+
+    Returns:
+        编译后的 CompiledStateGraph
+    """
+    summarization_middleware = SummarizationMiddleware(
+        model=model,
+        trigger=("messages", SUMMARIZE_TRIGGER_MESSAGES),
+        keep=("messages", SUMMARIZE_KEEP_MESSAGES),
+    )
+
+    agent = create_agent(
+        model=model,
+        tools=tools or [],
+        system_prompt=prompt or AGENT_SYSTEM_PROMPT,
+        checkpointer=checkpointer,
+        store=store,
+        middleware=[summarization_middleware],
+    )
+
+    logger.info(
+        "ReAct Agent 构建完成",
+        has_tools=bool(tools),
+        has_checkpointer=checkpointer is not None,
+        has_store=store is not None,
+        summarize_trigger=SUMMARIZE_TRIGGER_MESSAGES,
+        summarize_keep=SUMMARIZE_KEEP_MESSAGES,
+    )
+
+    return agent
+
+
+__all__ = ["build_react_agent"]
