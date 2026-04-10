@@ -33,12 +33,14 @@ class LLMService:
 
     def get_model(
         self,
-        model_name: str = "gpt-4o-mini",
+        model_name: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         temperature: float = 0.7,
         **kwargs,
     ) -> ChatOpenAI:
+        if model_name is None:
+            model_name = self.settings.agent_model_name
         """
         获取或创建 LLM 模型实例
         

@@ -8,15 +8,11 @@ from typing import Any, Sequence
 from langchain_core.tools import BaseTool
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain.agents import create_agent
-from langchain.agents.middleware import SummarizationMiddleware
 
 from app.core.agent.prompts.agent_prompt import AGENT_SYSTEM_PROMPT
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-SUMMARIZE_TRIGGER_MESSAGES = 40
-SUMMARIZE_KEEP_MESSAGES = 20
 
 
 def build_react_agent(
@@ -39,19 +35,12 @@ def build_react_agent(
     Returns:
         编译后的 CompiledStateGraph
     """
-    summarization_middleware = SummarizationMiddleware(
-        model=model,
-        trigger=("messages", SUMMARIZE_TRIGGER_MESSAGES),
-        keep=("messages", SUMMARIZE_KEEP_MESSAGES),
-    )
-
     agent = create_agent(
         model=model,
         tools=tools or [],
         system_prompt=prompt or AGENT_SYSTEM_PROMPT,
         checkpointer=checkpointer,
         store=store,
-        middleware=[summarization_middleware],
     )
 
     logger.info(
@@ -59,8 +48,6 @@ def build_react_agent(
         has_tools=bool(tools),
         has_checkpointer=checkpointer is not None,
         has_store=store is not None,
-        summarize_trigger=SUMMARIZE_TRIGGER_MESSAGES,
-        summarize_keep=SUMMARIZE_KEEP_MESSAGES,
     )
 
     return agent
