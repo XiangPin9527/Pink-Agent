@@ -89,6 +89,7 @@ async def handle_shortmem_compress(message: dict[str, Any]) -> None:
     from app.core.memory.shortmem import (
         KEEP_FRESH_MESSAGES,
         set_short_term_summary,
+        reset_msg_count_after_compress,
     )
 
     session_id = message.get("session_id", "")
@@ -113,6 +114,7 @@ async def handle_shortmem_compress(message: dict[str, Any]) -> None:
 
     success = await set_short_term_summary(session_id, summary_text)
     if success:
+        await reset_msg_count_after_compress(session_id)
         logger.info(
             "短期记忆压缩完成",
             session_id=session_id,

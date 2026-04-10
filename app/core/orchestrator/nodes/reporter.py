@@ -74,6 +74,10 @@ async def reporter(state: OrchestratorState) -> OrchestratorState:
         system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
         human_msgs = [m for m in messages if not isinstance(m, (AIMessage, SystemMessage))]
 
+        from app.core.orchestrator.nodes.utils import trigger_longterm_extract
+        user_id = state.get("user_id", "")
+        await trigger_longterm_extract(user_id, session_id, messages)
+
         if human_msgs:
             last_human = human_msgs[-1]
             state["messages"] = system_msgs + [final_message, last_human]
@@ -114,6 +118,10 @@ async def reporter(state: OrchestratorState) -> OrchestratorState:
                 "error": str(e),
             }
         )
+
+        from app.core.orchestrator.nodes.utils import trigger_longterm_extract
+        user_id = state.get("user_id", "")
+        await trigger_longterm_extract(user_id, session_id, messages)
 
     return state
 

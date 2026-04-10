@@ -544,7 +544,7 @@ async def create_orchestrator_engine():
     mq_service.register_handler(QUEUE_CHECKPOINT_WRITES, handle_checkpoint_writes)
     mq_service.register_handler(
         QUEUE_LONGTERM,
-        lambda ch, body: handle_longterm_extract(longterm_extractor, ch, body),
+        lambda body: handle_longterm_extract(longterm_extractor, body),
     )
     mq_service.register_handler(QUEUE_SHORTMEM_COMPRESS, handle_shortmem_compress)
 

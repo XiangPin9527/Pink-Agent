@@ -51,7 +51,12 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from langchain.agents import create_agent
     from app.core.orchestrator.memory import get_memory_loader
-    from app.core.memory.shortmem import get_short_term_summary
+    from app.core.memory.shortmem import (
+        get_short_term_summary,
+        get_msg_count,
+        increment_and_check_compress,
+        init_msg_count_if_needed,
+    )
 
     session_id = state["session_id"]
     user_id = state["user_id"]
@@ -77,6 +82,14 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
         )
         return state
 
+    stm_summary = await get_short_term_summary(session_id)
+    has_summary = bool(stm_summary)
+
+    await init_msg_count_if_needed(session_id, has_summary)
+
+    current_count = await get_msg_count(session_id)
+    logger.info("Executor 开始处理", session_id=session_id, user_id=user_id, msg_count=len(messages), counter=current_count)
+
     ltm_context = ""
     memory_loader = get_memory_loader()
     if memory_loader and user_id:
@@ -92,8 +105,6 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
                 logger.info("Executor 长期记忆加载完成", ltm_strings=ltm_strings)
         except Exception as e:
             logger.warning("Executor 长期记忆加载失败", error=str(e))
-
-    stm_summary = await get_short_term_summary(session_id)
 
     recent_history = _extract_recent_messages(messages, MAX_RECENT_MESSAGES)
     recent_history_text = ""
@@ -222,12 +233,9 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
         total_steps=len(plan.steps),
     )
 
-    from app.core.memory.shortmem import (
-        check_and_trigger_compress,
-    )
     all_messages_for_compress = list(state.get("messages", []))
     if all_messages_for_compress:
-        await check_and_trigger_compress(session_id, all_messages_for_compress, stm_summary or "")
+        await increment_and_check_compress(session_id, all_messages_for_compress, stm_summary or "")
 
     return state
 

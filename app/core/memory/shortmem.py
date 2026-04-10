@@ -180,17 +180,19 @@ async def check_and_trigger_compress(
     """
     检查是否需要触发压缩，如果是则发送 MQ 消息
 
+    基于 Redis 计数器判断是否需要压缩，避免因 state.messages 只增不减导致的重复触发问题
+
     Args:
         session_id: 会话 ID
-        messages: 完整的消息列表（将被传递给 MQ Worker）
+        messages: 当前会话的消息列表（传递给 MQ Worker 用于生成摘要）
         old_summary: 当前的摘要
 
     Returns:
         是否触发了压缩
     """
     try:
-        count = len(messages)
-        if count >= COMPRESS_THRESHOLD:
+        current_count = await get_msg_count(session_id)
+        if current_count >= COMPRESS_THRESHOLD:
             from app.core.memory.mq import MQService
             mq = MQService()
             await mq.publish(
@@ -199,18 +201,123 @@ async def check_and_trigger_compress(
                     "session_id": session_id,
                     "messages": _serialize_messages(messages),
                     "old_summary": old_summary,
+                    "trigger_count": current_count,
                 }
             )
             logger.info(
                 "触发短期记忆压缩",
                 session_id=session_id,
-                trigger_count=count,
+                trigger_count=current_count,
             )
             return True
         return False
     except Exception as e:
         logger.error("检查并触发压缩失败", session_id=session_id, error=str(e))
         return False
+
+
+async def increment_and_check_compress(
+    session_id: str,
+    messages: list,
+    old_summary: str,
+) -> bool:
+    """
+    递增消息计数并检查是否需要触发压缩
+
+    这是主要的入口函数，每次处理完用户消息后调用：
+    1. 递增 Redis 计数器
+    2. 检查是否达到压缩阈值
+    3. 如果达到阈值，触发压缩（MQ异步）并重置计数器
+
+    Args:
+        session_id: 会话 ID
+        messages: 当前会话的全部消息列表
+        old_summary: 当前的摘要
+
+    Returns:
+        是否触发了压缩
+    """
+    try:
+        new_count = await increment_msg_count(session_id)
+        logger.debug(
+            "消息计数已递增",
+            session_id=session_id,
+            new_count=new_count,
+        )
+
+        if new_count >= COMPRESS_THRESHOLD:
+            from app.core.memory.mq import MQService
+            mq = MQService()
+            await mq.publish(
+                ROUTING_SHORTMEM_COMPRESS,
+                {
+                    "session_id": session_id,
+                    "messages": _serialize_messages(messages),
+                    "old_summary": old_summary,
+                    "trigger_count": new_count,
+                }
+            )
+            logger.info(
+                "触发短期记忆压缩",
+                session_id=session_id,
+                trigger_count=new_count,
+            )
+            return True
+        return False
+    except Exception as e:
+        logger.error("递增计数并检查压缩失败", session_id=session_id, error=str(e))
+        return False
+
+
+async def reset_msg_count_after_compress(session_id: str) -> bool:
+    """
+    压缩完成后重置消息计数器
+
+    压缩完成后，将计数器重置为 KEEP_FRESH_MESSAGES，表示：
+    - 已经压缩了一批消息
+    - 保留了 KEEP_FRESH_MESSAGES 条最新消息在"未压缩"状态
+    - 下次递增从 KEEP_FRESH_MESSAGES + 1 开始
+
+    Args:
+        session_id: 会话 ID
+
+    Returns:
+        是否重置成功
+    """
+    try:
+        from app.infrastructure.redis_client import get_redis
+        r = await get_redis()
+        await r.set(get_msg_count_key(session_id), KEEP_FRESH_MESSAGES)
+        logger.debug(
+            "压缩后计数器已重置",
+            session_id=session_id,
+            new_count=KEEP_FRESH_MESSAGES,
+        )
+        return True
+    except Exception as e:
+        logger.error("重置压缩后计数器失败", session_id=session_id, error=str(e))
+        return False
+
+
+async def init_msg_count_if_needed(session_id: str, has_summary: bool) -> None:
+    """
+    如果需要，初始化消息计数器
+
+    首次建立摘要时，初始化计数器为 KEEP_FRESH_MESSAGES
+
+    Args:
+        session_id: 会话 ID
+        has_summary: 是否已有摘要
+    """
+    if has_summary:
+        current = await get_msg_count(session_id)
+        if current == 0:
+            await set_msg_count(session_id, KEEP_FRESH_MESSAGES)
+            logger.debug(
+                "已初始化计数器（有摘要情况）",
+                session_id=session_id,
+                init_count=KEEP_FRESH_MESSAGES,
+            )
 
 
 async def reset_session_shortmem(session_id: str) -> bool:
@@ -248,5 +355,8 @@ __all__ = [
     "set_msg_count",
     "increment_msg_count",
     "check_and_trigger_compress",
+    "increment_and_check_compress",
+    "reset_msg_count_after_compress",
+    "init_msg_count_if_needed",
     "reset_session_shortmem",
 ]
