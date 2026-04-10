@@ -57,7 +57,11 @@
 - **反思循环**: Judge 评估不通过时自动返回 Analyzer 重新规划（最多 3 次迭代）
 
 ### 多级记忆系统
-- **短期记忆**: 每个节点提取最近 20 条消息作为上下文，确保多轮对话连贯
+- **短期记忆（动态压缩）**:
+  - 消息 < 10 条：全量携带
+  - 消息 >= 10 条：MQ 异步压缩，生成摘要
+  - 后续携带：`[摘要]` + `[最新消息]`
+  - 保留策略：始终保留最新 5 条不压缩
 - **长期记忆**: PostgreSQL + pgvector 存储用户画像、偏好、项目背景
 - **异步提取**: RabbitMQ 驱动，每 10 条用户消息触发一次长期记忆提取
 
@@ -66,6 +70,7 @@
 - **PostgreSQL 异步持久化**: MQ 投递保障，持久化保障
 
 ### 异步消息队列
+- **短期记忆压缩**: 消息达到阈值时触发，MQ Worker 生成摘要并更新 Redis
 - **长期记忆提取**: LLM 从对话中提取 profile / preference / project / relation
 - **Checkpoint 持久化**: 异步写入 PostgreSQL
 - **Checkpoint Writes**: 追踪节点写入操作
@@ -252,12 +257,48 @@ docker-compose up -d
 
 ## 记忆系统详解
 
-### 短期记忆
+### 短期记忆（异步压缩）
 
-- **来源**: `state["messages"]`，由 Checkpointer 持久化
-- **提取**: 每个节点提取最近 20 条消息（不含当前消息）
-- **注入方式**: 拼接到 system prompt 或作为 messages 列表的一部分
-- **目的**: 确保多轮对话上下文连贯
+**压缩策略**：
+
+| 条件 | 行为 |
+|------|------|
+| 消息 < 10 条 | 全量携带，不压缩 |
+| 消息 >= 10 条 | 触发 MQ 异步压缩 |
+| 压缩时 | 保留最新 5 条，压缩之前的消息 |
+
+**工作流程**：
+
+```
+对话请求
+    │
+    ├─► 读取 Redis 摘要 ({session_id}_summary)
+    │
+    ├─► 拼入 prompt: [摘要] + [历史消息] + [当前消息]
+    │
+    ├─► 执行节点
+    │
+    └─► 检查 len(messages) >= 10
+            │
+            ├─ 是 → 发送 MQ 消息（含序列化消息内容）
+            │
+            └─ 否 → 结束
+
+MQ Worker:
+    ├─► 收到消息
+    ├─► 提取待压缩消息（messages[:-5]）
+    ├─► 调用 LLM 生成摘要
+    ├─► 新摘要 = merge(旧摘要, 新压缩内容)
+    └─► 更新 Redis {session_id}_summary
+```
+
+**存储位置**：
+- Redis Key: `stm_summary:{session_id}` — 对话摘要
+- Redis Key: `stm_msg_count:{session_id}` — 消息计数（预留）
+
+**注入方式**：
+- 拼接到 system prompt 作为上下文
+- 确保多轮对话上下文连贯
 
 ### 长期记忆
 
@@ -279,21 +320,23 @@ docker-compose up -d
   │
   ├─► Simple Handler
   │    ├─ 加载长期记忆 (Store 向量搜索)
-  │    ├─ 提取短期记忆 (最近20条消息)
+  │    ├─ 读取短期记忆摘要 (Redis)
+  │    ├─ 提取近期消息 (state["messages"])
   │    ├─ ReAct Agent 执行
-  │    └─ 返回 AI 回复
+  │    └─ 检查触发压缩 (>= 10条 → MQ)
   │
   └─► Analyzer → Executor → Judge → Reporter
        │         │         │        │
-       │         │         │        └─ 加载短期记忆 + 长期记忆
-       │         │         └─ 加载短期记忆 + 长期记忆
-       │         └─ 加载短期记忆 + 长期记忆
-       └─ 加载短期记忆 + 长期记忆
+       │         │         │        ├─ 加载短期记忆摘要 + 长期记忆
+       │         │         ├─ 加载短期记忆摘要 + 长期记忆
+       │         └─ 加载短期记忆摘要 + 长期记忆
+       └─ 加载短期记忆摘要 + 长期记忆
 
 所有节点执行后:
   ├─ Checkpointer 自动持久化 (Redis + PostgreSQL)
   └─ 后处理 (MQ 异步)
-       └─ 提取长期记忆 → Store (PostgreSQL + pgvector)
+       ├─ 短期记忆压缩 → Redis {session_id}_summary
+       └─ 长期记忆提取 → Store (PostgreSQL + pgvector)
 ```
 
 ## API 接口
@@ -354,70 +397,71 @@ ai-agent-engine/
 │   │   └── settings.py                  # 全局配置 (Pydantic Settings)
 │   ├── api/
 │   │   ├── router.py                    # 路由注册
-│   │   ├── deps.py                      # 依赖注入 (OrchestratorEngine)
+│   │   ├── deps.py                     # 依赖注入 (OrchestratorEngine)
 │   │   ├── v1/
-│   │   │   ├── agent.py                 # 对话接口 (流式/非流式)
-│   │   │   ├── rag.py                   # RAG 接口
-│   │   │   └── health.py                # 健康检查
+│   │   │   ├── agent.py                # 对话接口 (流式/非流式)
+│   │   │   ├── rag.py                  # RAG 接口
+│   │   │   └── health.py               # 健康检查
 │   │   └── schemas/
-│   │       ├── chat_request.py          # 请求模型
-│   │       └── chat_response.py         # 响应模型
+│   │       ├── chat_request.py         # 请求模型
+│   │       └── chat_response.py        # 响应模型
 │   ├── core/
 │   │   ├── agent/
-│   │   │   ├── engine.py                # AgentEngine + OrchestratorEngine
+│   │   │   ├── engine.py               # AgentEngine + OrchestratorEngine
 │   │   │   ├── graph/
-│   │   │   │   ├── __init__.py          # build_react_agent 构建
-│   │   │   │   └── state.py             # AgentState 定义
+│   │   │   │   └── __init__.py         # build_react_agent 构建
 │   │   │   └── prompts/
-│   │   │       └── agent_prompt.py      # ReAct Agent 系统提示词
+│   │   │       └── agent_prompt.py     # ReAct Agent 系统提示词
 │   │   ├── llm/
-│   │   │   └── service.py               # LLM 调用服务 (DashScope)
+│   │   │   └── service.py              # LLM 调用服务 (DashScope)
 │   │   ├── memory/
-│   │   │   ├── loader.py                # 记忆加载与组装
+│   │   │   ├── loader.py               # 记忆加载与组装
+│   │   │   ├── shortmem.py             # 短期记忆压缩 (MQ 触发 + Redis 存储)
 │   │   │   ├── checkpoint/
-│   │   │   │   └── saver.py             # Checkpoint 两级缓存 (Redis + PG)
+│   │   │   │   └── saver.py            # Checkpoint 两级缓存 (Redis + PG)
 │   │   │   ├── summary/
-│   │   │   │   └── service.py           # 会话摘要服务
+│   │   │   │   └── service.py          # 会话摘要服务
 │   │   │   ├── longterm/
-│   │   │   │   └── extractor.py         # 长期记忆提取器
+│   │   │   │   └── extractor.py        # 长期记忆提取器
 │   │   │   └── mq/
-│   │   │       ├── service.py           # RabbitMQ 消息队列服务
-│   │   │       └── handlers.py          # MQ 消息处理器
-│   │   ├── orchestrator/                # 多级 Agent 编排模块
-│   │   │   ├── graph.py                 # 编排图定义 (Router + 条件路由)
-│   │   │   ├── state.py                 # OrchestratorState 定义
-│   │   │   ├── schemas.py               # ExecutionPlan / JudgeResult 等
-│   │   │   ├── prompts.py                # 各节点系统提示词
-│   │   │   ├── memory.py                 # 编排器全局记忆组件
+│   │   │       ├── service.py          # RabbitMQ 消息队列服务
+│   │   │       ├── handlers.py         # MQ 消息处理器
+│   │   │       └── __init__.py         # MQ 模块导出
+│   │   ├── orchestrator/               # 多级 Agent 编排模块
+│   │   │   ├── graph.py                # 编排图定义 (Router + 条件路由)
+│   │   │   ├── state.py                # OrchestratorState 定义
+│   │   │   ├── schemas.py              # ExecutionPlan / JudgeResult 等
+│   │   │   ├── prompts.py              # 各节点系统提示词
+│   │   │   ├── memory.py               # 编排器全局记忆组件
 │   │   │   └── nodes/
-│   │   │       ├── router.py            # 复杂度路由节点
-│   │   │       ├── simple_handler.py    # 简单任务处理器
-│   │   │       ├── analyzer.py           # 复杂任务分析规划节点
-│   │   │       ├── executor.py          # 任务执行节点
-│   │   │       ├── judge.py             # 执行结果评估节点
-│   │   │       └── reporter.py          # 总结报告节点
+│   │   │       ├── router.py           # 复杂度路由节点
+│   │   │       ├── simple_handler.py   # 简单任务处理器
+│   │   │       ├── analyzer.py         # 复杂任务分析规划节点
+│   │   │       ├── executor.py         # 任务执行节点
+│   │   │       ├── judge.py            # 执行结果评估节点
+│   │   │       └── reporter.py         # 总结报告节点
 │   │   └── rag/
-│   │       └── engine.py                # RAG 引擎
+│   │       └── engine.py               # RAG 引擎
 │   ├── infrastructure/
-│   │   ├── redis_client.py              # Redis 客户端
-│   │   ├── db_client.py                 # PostgreSQL 客户端
-│   │   └── mq_client.py                 # RabbitMQ 客户端
-│   ├── models/                          # 模型层
-│   ├── tools/                           # 工具层 (MCP)
-│   │   ├── registry.py                  # 工具注册表
+│   │   ├── redis_client.py             # Redis 客户端
+│   │   ├── db_client.py                # PostgreSQL 客户端
+│   │   └── mq_client.py                # RabbitMQ 客户端
+│   ├── models/                         # 模型层
+│   ├── tools/                          # 工具层 (MCP)
+│   │   ├── registry.py                 # 工具注册表
 │   │   └── __init__.py
 │   └── utils/
-│       ├── logger.py                    # 结构化日志 (structlog)
-│       ├── trace.py                     # 链路追踪上下文
-│       ├── retry.py                     # 重试工具
-│       └── sse.py                       # SSE 工具
+│       ├── logger.py                   # 结构化日志 (structlog)
+│       ├── trace.py                    # 链路追踪上下文
+│       ├── retry.py                    # 重试工具
+│       └── sse.py                      # SSE 工具
 ├── scripts/
-│   └── init_db.py                       # 数据库初始化脚本
-├── tests/                               # 测试
-├── docker-compose.yml                   # Docker Compose
-├── Dockerfile                           # Docker 镜像
-├── pyproject.toml                       # 项目配置
-└── .env.example                         # 环境变量示例
+│   └── init_db.py                     # 数据库初始化脚本
+├── tests/                              # 测试
+├── docker-compose.yml                  # Docker Compose
+├── Dockerfile                          # Docker 镜像
+├── pyproject.toml                      # 项目配置
+└── .env.example                        # 环境变量示例
 ```
 
 ## 配置说明

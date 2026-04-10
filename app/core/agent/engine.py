@@ -22,14 +22,17 @@ from langgraph.store.postgres.aio import AsyncPostgresStore
 from app.core.memory.mq import (
     MQService,
     ROUTING_LONGTERM,
+    ROUTING_SHORTMEM_COMPRESS,
     QUEUE_CHECKPOINT_PERSIST,
     QUEUE_CHECKPOINT_WRITES,
     QUEUE_LONGTERM,
+    QUEUE_SHORTMEM_COMPRESS,
 )
 from app.core.memory.mq.handlers import (
     handle_checkpoint_persist,
     handle_checkpoint_writes,
     handle_longterm_extract,
+    handle_shortmem_compress,
 )
 from app.core.memory.loader import MemoryLoader
 from app.core.memory.longterm import LongTermExtractor, LONGTERM_EXTRACT_INTERVAL
@@ -38,6 +41,9 @@ from app.utils.logger import get_logger
 from app.utils.trace import TraceContext, set_trace_context
 
 logger = get_logger(__name__)
+
+# 全局变量，用于存储 orchestrator 的 checkpointer（供 MQ Handler 使用）
+_orchestrator_checkpointer: Optional[RedisPostgresSaver] = None
 
 
 class AgentEngine:
@@ -531,6 +537,7 @@ async def create_orchestrator_engine():
         QUEUE_CHECKPOINT_PERSIST,
         QUEUE_CHECKPOINT_WRITES,
         QUEUE_LONGTERM,
+        QUEUE_SHORTMEM_COMPRESS,
     )
 
     mq_service.register_handler(QUEUE_CHECKPOINT_PERSIST, handle_checkpoint_persist)
@@ -539,6 +546,7 @@ async def create_orchestrator_engine():
         QUEUE_LONGTERM,
         lambda ch, body: handle_longterm_extract(longterm_extractor, ch, body),
     )
+    mq_service.register_handler(QUEUE_SHORTMEM_COMPRESS, handle_shortmem_compress)
 
     await mq_service.start_workers()
 
