@@ -13,10 +13,8 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-MAX_RECENT_MESSAGES = 20
 
-
-def _extract_recent_messages(messages: List[BaseMessage], max_count: int = MAX_RECENT_MESSAGES) -> List[BaseMessage]:
+def _extract_recent_messages(messages: List[BaseMessage], max_count: int) -> List[BaseMessage]:
     if len(messages) <= 1:
         return []
     return messages[-(max_count + 1):-1]
@@ -56,6 +54,7 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
         get_msg_count,
         increment_and_check_compress,
         init_msg_count_if_needed,
+        COMPRESS_THRESHOLD,
     )
 
     session_id = state["session_id"]
@@ -106,7 +105,7 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
         except Exception as e:
             logger.warning("Executor 长期记忆加载失败", error=str(e))
 
-    recent_history = _extract_recent_messages(messages, MAX_RECENT_MESSAGES)
+    recent_history = _extract_recent_messages(messages, current_count if current_count > 0 else COMPRESS_THRESHOLD)
     recent_history_text = ""
     if recent_history:
         recent_history_text = "\n".join(
