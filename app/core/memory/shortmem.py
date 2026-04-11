@@ -11,21 +11,16 @@
 4. MQ Worker 从 Checkpointer 读取消息，生成摘要并更新 Redis
 """
 
-from typing import Optional
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 压缩相关常量
-UNCOMPRESSED_WINDOW = 10
 COMPRESS_THRESHOLD = 10
 KEEP_FRESH_MESSAGES = 5
 
-# Redis Key 前缀
 REDIS_KEY_SUMMARY_PREFIX = "stm_summary"
 REDIS_KEY_MSG_COUNT_PREFIX = "stm_msg_count"
 
-# MQ Routing Key
 ROUTING_SHORTMEM_COMPRESS = "shortmem.compress"
 
 
@@ -172,50 +167,6 @@ def _serialize_messages(messages: list) -> list:
     return result
 
 
-async def check_and_trigger_compress(
-    session_id: str,
-    messages: list,
-    old_summary: str,
-) -> bool:
-    """
-    检查是否需要触发压缩，如果是则发送 MQ 消息
-
-    基于 Redis 计数器判断是否需要压缩，避免因 state.messages 只增不减导致的重复触发问题
-
-    Args:
-        session_id: 会话 ID
-        messages: 当前会话的消息列表（传递给 MQ Worker 用于生成摘要）
-        old_summary: 当前的摘要
-
-    Returns:
-        是否触发了压缩
-    """
-    try:
-        current_count = await get_msg_count(session_id)
-        if current_count >= COMPRESS_THRESHOLD:
-            from app.core.memory.mq import MQService
-            mq = MQService()
-            await mq.publish(
-                ROUTING_SHORTMEM_COMPRESS,
-                {
-                    "session_id": session_id,
-                    "messages": _serialize_messages(messages),
-                    "old_summary": old_summary,
-                    "trigger_count": current_count,
-                }
-            )
-            logger.info(
-                "触发短期记忆压缩",
-                session_id=session_id,
-                trigger_count=current_count,
-            )
-            return True
-        return False
-    except Exception as e:
-        logger.error("检查并触发压缩失败", session_id=session_id, error=str(e))
-        return False
-
-
 async def increment_and_check_compress(
     session_id: str,
     messages: list,
@@ -320,30 +271,7 @@ async def init_msg_count_if_needed(session_id: str, has_summary: bool) -> None:
             )
 
 
-async def reset_session_shortmem(session_id: str) -> bool:
-    """
-    重置指定 session 的短期记忆（摘要和计数都清空）
-
-    Args:
-        session_id: 会话 ID
-
-    Returns:
-        是否重置成功
-    """
-    try:
-        from app.infrastructure.redis_client import get_redis
-        r = await get_redis()
-        await r.delete(get_summary_key(session_id))
-        await r.delete(get_msg_count_key(session_id))
-        logger.info("短期记忆已重置", session_id=session_id)
-        return True
-    except Exception as e:
-        logger.error("重置短期记忆失败", session_id=session_id, error=str(e))
-        return False
-
-
 __all__ = [
-    "UNCOMPRESSED_WINDOW",
     "COMPRESS_THRESHOLD",
     "KEEP_FRESH_MESSAGES",
     "ROUTING_SHORTMEM_COMPRESS",
@@ -354,9 +282,7 @@ __all__ = [
     "get_msg_count",
     "set_msg_count",
     "increment_msg_count",
-    "check_and_trigger_compress",
     "increment_and_check_compress",
     "reset_msg_count_after_compress",
     "init_msg_count_if_needed",
-    "reset_session_shortmem",
 ]
