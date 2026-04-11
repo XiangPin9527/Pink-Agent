@@ -12,129 +12,15 @@
 """
 
 from app.utils.logger import get_logger
-from app.infrastructure.redis_client import get_redis
-from app.core.memory.mq import get_mq_service
+from app.infrastructure.redis_service import get_redis_service
+from app.infrastructure.mq_publisher import get_mq_publisher
 
 logger = get_logger(__name__)
 
 COMPRESS_THRESHOLD = 10
 KEEP_FRESH_MESSAGES = 5
 
-REDIS_KEY_SUMMARY_PREFIX = "stm_summary"
-REDIS_KEY_MSG_COUNT_PREFIX = "stm_msg_count"
-
 ROUTING_SHORTMEM_COMPRESS = "shortmem.compress"
-
-
-def get_summary_key(session_id: str) -> str:
-    """获取指定 session 的摘要 Redis Key"""
-    return f"{REDIS_KEY_SUMMARY_PREFIX}:{session_id}"
-
-
-def get_msg_count_key(session_id: str) -> str:
-    """获取指定 session 的消息计数 Redis Key"""
-    return f"{REDIS_KEY_MSG_COUNT_PREFIX}:{session_id}"
-
-
-async def get_short_term_summary(session_id: str) -> str:
-    """
-    从 Redis 获取指定 session 的短期记忆摘要
-
-    Args:
-        session_id: 会话 ID
-
-    Returns:
-        摘要内容，如果不存在则返回空字符串
-    """
-    try:
-        r = await get_redis()
-        summary = await r.get(get_summary_key(session_id))
-        if summary:
-            return summary.decode() if isinstance(summary, bytes) else summary
-        return ""
-    except Exception as e:
-        logger.warning("获取短期记忆摘要失败", session_id=session_id, error=str(e))
-        return ""
-
-
-async def set_short_term_summary(session_id: str, summary: str) -> bool:
-    """
-    更新 Redis 中指定 session 的短期记忆摘要
-
-    Args:
-        session_id: 会话 ID
-        summary: 新的摘要内容
-
-    Returns:
-        是否更新成功
-    """
-    try:
-        r = await get_redis()
-        await r.set(get_summary_key(session_id), summary)
-        return True
-    except Exception as e:
-        logger.error("更新短期记忆摘要失败", session_id=session_id, error=str(e))
-        return False
-
-
-async def get_msg_count(session_id: str) -> int:
-    """
-    获取指定 session 的未压缩消息计数
-
-    Args:
-        session_id: 会话 ID
-
-    Returns:
-        消息计数
-    """
-    try:
-        r = await get_redis()
-        count = await r.get(get_msg_count_key(session_id))
-        if count:
-            return int(count) if isinstance(count, bytes) else int(count)
-        return 0
-    except Exception as e:
-        logger.warning("获取消息计数失败", session_id=session_id, error=str(e))
-        return 0
-
-
-async def set_msg_count(session_id: str, count: int) -> bool:
-    """
-    更新 Redis 中指定 session 的消息计数
-
-    Args:
-        session_id: 会话 ID
-        count: 新的计数
-
-    Returns:
-        是否更新成功
-    """
-    try:
-        r = await get_redis()
-        await r.set(get_msg_count_key(session_id), count)
-        return True
-    except Exception as e:
-        logger.error("更新消息计数失败", session_id=session_id, error=str(e))
-        return False
-
-
-async def increment_msg_count(session_id: str) -> int:
-    """
-    递增消息计数并返回新值
-
-    Args:
-        session_id: 会话 ID
-
-    Returns:
-        递增后的计数
-    """
-    try:
-        r = await get_redis()
-        new_count = await r.incr(get_msg_count_key(session_id))
-        return int(new_count)
-    except Exception as e:
-        logger.error("递增消息计数失败", session_id=session_id, error=str(e))
-        return 0
 
 
 def _serialize_messages(messages: list) -> list:
@@ -162,6 +48,78 @@ def _serialize_messages(messages: list) -> list:
         else:
             result.append({"type": "unknown", "content": str(msg)})
     return result
+
+
+async def get_short_term_summary(session_id: str) -> str:
+    """
+    从 Redis 获取指定 session 的短期记忆摘要
+
+    Args:
+        session_id: 会话 ID
+
+    Returns:
+        摘要内容，如果不存在则返回空字符串
+    """
+    redis_service = get_redis_service()
+    return await redis_service.get_short_term_summary(session_id)
+
+
+async def set_short_term_summary(session_id: str, summary: str) -> bool:
+    """
+    更新 Redis 中指定 session 的短期记忆摘要
+
+    Args:
+        session_id: 会话 ID
+        summary: 新的摘要内容
+
+    Returns:
+        是否更新成功
+    """
+    redis_service = get_redis_service()
+    return await redis_service.set_short_term_summary(session_id, summary)
+
+
+async def get_msg_count(session_id: str) -> int:
+    """
+    获取指定 session 的未压缩消息计数
+
+    Args:
+        session_id: 会话 ID
+
+    Returns:
+        消息计数
+    """
+    redis_service = get_redis_service()
+    return await redis_service.get_msg_count(session_id)
+
+
+async def set_msg_count(session_id: str, count: int) -> bool:
+    """
+    更新 Redis 中指定 session 的消息计数
+
+    Args:
+        session_id: 会话 ID
+        count: 新的计数
+
+    Returns:
+        是否更新成功
+    """
+    redis_service = get_redis_service()
+    return await redis_service.set_msg_count(session_id, count)
+
+
+async def increment_msg_count(session_id: str) -> int:
+    """
+    递增消息计数并返回新值
+
+    Args:
+        session_id: 会话 ID
+
+    Returns:
+        递增后的计数
+    """
+    redis_service = get_redis_service()
+    return await redis_service.increment_msg_count(session_id)
 
 
 async def increment_and_check_compress(
@@ -194,15 +152,12 @@ async def increment_and_check_compress(
         )
 
         if new_count >= COMPRESS_THRESHOLD:
-            mq = get_mq_service()
-            await mq.publish(
-                ROUTING_SHORTMEM_COMPRESS,
-                {
-                    "session_id": session_id,
-                    "messages": _serialize_messages(messages),
-                    "old_summary": old_summary,
-                    "trigger_count": new_count,
-                }
+            mq_publisher = get_mq_publisher()
+            await mq_publisher.publish_shortmem_compress(
+                session_id,
+                _serialize_messages(messages),
+                old_summary,
+                new_count,
             )
             logger.info(
                 "触发短期记忆压缩",
@@ -231,9 +186,9 @@ async def reset_msg_count_after_compress(session_id: str) -> bool:
     Returns:
         是否重置成功
     """
+    redis_service = get_redis_service()
     try:
-        r = await get_redis()
-        await r.set(get_msg_count_key(session_id), KEEP_FRESH_MESSAGES)
+        await redis_service.set_msg_count(session_id, KEEP_FRESH_MESSAGES)
         logger.debug(
             "压缩后计数器已重置",
             session_id=session_id,
@@ -270,8 +225,6 @@ __all__ = [
     "COMPRESS_THRESHOLD",
     "KEEP_FRESH_MESSAGES",
     "ROUTING_SHORTMEM_COMPRESS",
-    "get_summary_key",
-    "get_msg_count_key",
     "get_short_term_summary",
     "set_short_term_summary",
     "get_msg_count",

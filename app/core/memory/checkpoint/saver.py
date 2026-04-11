@@ -1,5 +1,4 @@
 import base64
-import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -14,14 +13,13 @@ from langgraph.checkpoint.base import (
 )
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
-from app.infrastructure.redis_client import get_redis
-from app.infrastructure.db_client import get_db_pool
 from app.utils.logger import get_logger
-from app.core.memory.mq.service import get_mq_service, ROUTING_CHECKPOINT_PERSIST, ROUTING_CHECKPOINT_WRITES
+from app.infrastructure.redis_service import get_redis_service
+from app.infrastructure.db_service import get_db_service
+from app.infrastructure.mq_publisher import get_mq_publisher
+from app.core.memory.mq.service import ROUTING_CHECKPOINT_PERSIST, ROUTING_CHECKPOINT_WRITES
 
 logger = get_logger(__name__)
-
-REDIS_CP_PREFIX = "cp"
 
 
 def _thread_id(config: RunnableConfig) -> str:
@@ -30,10 +28,6 @@ def _thread_id(config: RunnableConfig) -> str:
 
 def _checkpoint_ns(config: RunnableConfig) -> str:
     return config.get("configurable", {}).get("checkpoint_ns", "")
-
-
-def _cp_key(thread_id: str, ns: str = "") -> str:
-    return f"{REDIS_CP_PREFIX}:{thread_id}:{ns}"
 
 
 def _serde_encode(serde: SerializerProtocol, obj: Any) -> tuple[str, str]:
@@ -82,8 +76,7 @@ class RedisPostgresSaver(BaseCheckpointSaver):
         meta_type, meta_b64 = _serde_encode(self.serde, metadata) if metadata else (None, None)
 
         try:
-            r = await get_redis()
-            key = _cp_key(thread_id, ns)
+            redis_service = get_redis_service()
             payload = {
                 "checkpoint_id": checkpoint_id,
                 "cp_type": cp_type,
@@ -92,8 +85,7 @@ class RedisPostgresSaver(BaseCheckpointSaver):
                 "meta_data": meta_b64,
                 "parent_checkpoint_id": parent_checkpoint_id,
             }
-            import orjson
-            await r.set(key, orjson.dumps(payload).decode("utf-8"))
+            await redis_service.set_checkpoint(thread_id, ns, payload)
             logger.debug("Checkpoint 写入 Redis", thread_id=thread_id, checkpoint_id=checkpoint_id)
         except Exception as e:
             logger.warning("Checkpoint 写入 Redis 失败，跳过", thread_id=thread_id, error=str(e))
@@ -176,62 +168,44 @@ class RedisPostgresSaver(BaseCheckpointSaver):
         ns = _checkpoint_ns(config)
 
         try:
-            pool = await get_db_pool()
-            async with pool.acquire() as conn:
-                sql = """
-                    SELECT checkpoint_id, type, checkpoint, metadata, parent_checkpoint_id
-                    FROM checkpoints
-                    WHERE thread_id = $1 AND checkpoint_ns = $2
-                """
-                args: list[Any] = [thread_id, ns]
-                arg_idx = 3
+            db_service = get_db_service()
+            before_checkpoint_id = None
+            if before:
+                before_checkpoint_id = before.get("configurable", {}).get("checkpoint_id")
 
-                if before:
-                    before_id = before.get("configurable", {}).get("checkpoint_id")
-                    if before_id:
-                        sql += f" AND created_at < (SELECT created_at FROM checkpoints WHERE checkpoint_id = ${arg_idx})"
-                        args.append(before_id)
-                        arg_idx += 1
+            rows = await db_service.list_checkpoints(thread_id, ns, before_checkpoint_id, limit)
 
-                sql += " ORDER BY created_at DESC"
+            for row in rows:
+                cp_type = row["type"] or "msgpack"
+                cp_data = row["checkpoint"]
+                meta_type = cp_type
+                meta_data = row["metadata"]
 
-                if limit:
-                    sql += f" LIMIT ${arg_idx}"
-                    args.append(limit)
+                cp_obj = self.serde.loads_typed((cp_type, cp_data))
+                meta_obj = self.serde.loads_typed((meta_type, meta_data)) if meta_data else CheckpointMetadata()
 
-                rows = await conn.fetch(sql, *args)
-
-                for row in rows:
-                    cp_type = row["type"] or "msgpack"
-                    cp_data = row["checkpoint"]
-                    meta_type = cp_type
-                    meta_data = row["metadata"]
-
-                    cp_obj = self.serde.loads_typed((cp_type, cp_data))
-                    meta_obj = self.serde.loads_typed((meta_type, meta_data)) if meta_data else CheckpointMetadata()
-
-                    yield CheckpointTuple(
-                        config={
+                yield CheckpointTuple(
+                    config={
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_ns": ns,
+                            "checkpoint_id": row["checkpoint_id"],
+                        }
+                    },
+                    checkpoint=cp_obj,
+                    metadata=meta_obj,
+                    parent_config=(
+                        {
                             "configurable": {
                                 "thread_id": thread_id,
                                 "checkpoint_ns": ns,
-                                "checkpoint_id": row["checkpoint_id"],
+                                "checkpoint_id": row["parent_checkpoint_id"],
                             }
-                        },
-                        checkpoint=cp_obj,
-                        metadata=meta_obj,
-                        parent_config=(
-                            {
-                                "configurable": {
-                                    "thread_id": thread_id,
-                                    "checkpoint_ns": ns,
-                                    "checkpoint_id": row["parent_checkpoint_id"],
-                                }
-                            }
-                            if row["parent_checkpoint_id"]
-                            else None
-                        ),
-                    )
+                        }
+                        if row["parent_checkpoint_id"]
+                        else None
+                    ),
+                )
         except Exception as e:
             logger.error("从 PostgreSQL 列出 Checkpoint 失败", thread_id=thread_id, error=str(e))
 
@@ -264,18 +238,9 @@ class RedisPostgresSaver(BaseCheckpointSaver):
         data: bytes,
         metadata: bytes | None,
     ) -> None:
-        mq = get_mq_service()
-        await mq.publish(
-            ROUTING_CHECKPOINT_PERSIST,
-            {
-                "action": "persist",
-                "thread_id": thread_id,
-                "ns": ns,
-                "checkpoint_id": checkpoint_id,
-                "parent_checkpoint_id": parent_checkpoint_id,
-                "cp_data": base64.b64encode(data).decode(),
-                "meta_data": base64.b64encode(metadata).decode() if metadata else None,
-            },
+        mq_publisher = get_mq_publisher()
+        await mq_publisher.publish_checkpoint_persist(
+            thread_id, ns, checkpoint_id, parent_checkpoint_id, data, metadata
         )
 
     async def _persist_writes_via_mq(
@@ -286,36 +251,23 @@ class RedisPostgresSaver(BaseCheckpointSaver):
         task_id: str,
         writes: Sequence[tuple[str, Any]],
     ) -> None:
-        mq = get_mq_service()
+        mq_publisher = get_mq_publisher()
+        serialized_writes = []
         for idx, (channel, value) in enumerate(writes):
             write_type, write_blob = self.serde.dumps_typed(value)
-            await mq.publish(
-                ROUTING_CHECKPOINT_WRITES,
-                {
-                    "action": "put_write",
-                    "thread_id": thread_id,
-                    "ns": ns,
-                    "checkpoint_id": checkpoint_id,
-                    "task_id": task_id,
-                    "idx": idx,
-                    "channel": channel,
-                    "write_type": write_type,
-                    "write_blob": base64.b64encode(write_blob).decode(),
-                },
-            )
+            serialized_writes.append((idx, channel, write_type, write_blob))
+        await mq_publisher.publish_checkpoint_writes(
+            thread_id, ns, checkpoint_id, task_id, serialized_writes
+        )
 
     async def _load_from_redis(
         self, thread_id: str, ns: str, checkpoint_id: str | None
     ) -> tuple[Checkpoint | None, CheckpointMetadata | None, str | None]:
         try:
-            r = await get_redis()
-            key = _cp_key(thread_id, ns)
-            raw = await r.get(key)
-            if not raw:
+            redis_service = get_redis_service()
+            payload = await redis_service.get_checkpoint(thread_id, ns)
+            if not payload:
                 return None, None, None
-
-            import orjson
-            payload = orjson.loads(raw)
 
             cp_obj = _serde_decode(self.serde, payload["cp_type"], payload["cp_data"])
 
@@ -337,38 +289,18 @@ class RedisPostgresSaver(BaseCheckpointSaver):
         self, thread_id: str, ns: str, checkpoint_id: str | None
     ) -> tuple[Checkpoint | None, CheckpointMetadata | None, str | None]:
         try:
-            pool = await get_db_pool()
-            async with pool.acquire() as conn:
-                if checkpoint_id:
-                    row = await conn.fetchrow(
-                        """
-                        SELECT checkpoint_id, type, checkpoint, metadata, parent_checkpoint_id
-                        FROM checkpoints
-                        WHERE thread_id = $1 AND checkpoint_ns = $2 AND checkpoint_id = $3
-                        """,
-                        thread_id, ns, checkpoint_id,
-                    )
-                else:
-                    row = await conn.fetchrow(
-                        """
-                        SELECT checkpoint_id, type, checkpoint, metadata, parent_checkpoint_id
-                        FROM checkpoints
-                        WHERE thread_id = $1 AND checkpoint_ns = $2
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                        """,
-                        thread_id, ns,
-                    )
+            db_service = get_db_service()
+            row = await db_service.get_checkpoint(thread_id, ns, checkpoint_id)
 
-                if not row:
-                    return None, None, None
+            if not row:
+                return None, None, None
 
-                cp_type = row["type"] or "msgpack"
-                cp_obj = self.serde.loads_typed((cp_type, row["checkpoint"]))
-                meta_obj = self.serde.loads_typed((cp_type, row["metadata"])) if row["metadata"] else None
-                parent_id = row["parent_checkpoint_id"]
+            cp_type = row["type"] or "msgpack"
+            cp_obj = self.serde.loads_typed((cp_type, row["checkpoint"]))
+            meta_obj = self.serde.loads_typed((cp_type, row["metadata"])) if row["metadata"] else None
+            parent_id = row["parent_checkpoint_id"]
 
-                return cp_obj, meta_obj, parent_id
+            return cp_obj, meta_obj, parent_id
         except Exception as e:
             logger.error("从 PostgreSQL 加载 Checkpoint 失败", thread_id=thread_id, error=str(e))
             return None, None, None
@@ -382,18 +314,10 @@ class RedisPostgresSaver(BaseCheckpointSaver):
         data: bytes,
         metadata: bytes | None,
     ) -> None:
-        pool = await get_db_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata)
-                VALUES ($1, $2, $3, $4, 'msgpack', $5, $6)
-                ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id)
-                DO UPDATE SET checkpoint = EXCLUDED.checkpoint, metadata = EXCLUDED.metadata,
-                              parent_checkpoint_id = EXCLUDED.parent_checkpoint_id
-                """,
-                thread_id, ns, checkpoint_id, parent_checkpoint_id, data, metadata,
-            )
+        db_service = get_db_service()
+        await db_service.persist_checkpoint(
+            thread_id, ns, checkpoint_id, parent_checkpoint_id, data, metadata
+        )
 
     async def _persist_writes_to_db(
         self,
@@ -403,19 +327,12 @@ class RedisPostgresSaver(BaseCheckpointSaver):
         task_id: str,
         writes: Sequence[tuple[str, Any]],
     ) -> None:
-        pool = await get_db_pool()
-        async with pool.acquire() as conn:
-            for idx, (channel, value) in enumerate(writes):
-                write_type, write_blob = self.serde.dumps_typed(value)
-                await conn.execute(
-                    """
-                    INSERT INTO checkpoint_writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, blob)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
-                    DO UPDATE SET blob = EXCLUDED.blob, type = EXCLUDED.type
-                    """,
-                    thread_id, ns, checkpoint_id, task_id, idx, channel, write_type, write_blob,
-                )
+        db_service = get_db_service()
+        for idx, (channel, value) in enumerate(writes):
+            write_type, write_blob = self.serde.dumps_typed(value)
+            await db_service.persist_checkpoint_write(
+                thread_id, ns, checkpoint_id, task_id, idx, channel, write_type, write_blob
+            )
 
 
 __all__ = ["RedisPostgresSaver"]

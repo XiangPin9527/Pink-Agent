@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, List, Optional
 from langchain_core.messages import BaseMessage
 
 from app.core.memory.longterm import LONGTERM_EXTRACT_INTERVAL
-from app.core.orchestrator.memory import get_mq_service
-from app.core.memory.mq import ROUTING_LONGTERM
+from app.infrastructure.mq_publisher import get_mq_publisher
+from app.infrastructure.redis_service import get_redis_service
 from app.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -93,12 +93,13 @@ async def trigger_longterm_extract(
         session_id: 会话 ID
         messages: 完整的消息列表
     """
-    mq_service = get_mq_service()
-    if not mq_service:
+    mq_publisher = get_mq_publisher()
+    if not mq_publisher:
         logger.warning("MQ服务未初始化，跳过长期记忆提取", session_id=session_id)
         return
 
-    last_idx = await get_longterm_extract_position(session_id)
+    redis_service = get_redis_service()
+    last_idx = await redis_service.get_longterm_extract_position(session_id)
 
     if last_idx >= len(messages):
         last_idx = 0
@@ -127,14 +128,11 @@ async def trigger_longterm_extract(
 
     if new_msg_count >= LONGTERM_EXTRACT_INTERVAL:
         try:
-            await mq_service.publish(
-                ROUTING_LONGTERM,
-                {
-                    "user_id": user_id,
-                    "thread_id": session_id,
-                    "messages": serialized,
-                    "total_msg_count": len(messages),
-                },
+            await mq_publisher.publish_longterm_extract(
+                user_id,
+                session_id,
+                serialized,
+                len(messages),
             )
             logger.info(
                 "长期记忆提取任务已发布",
@@ -144,7 +142,7 @@ async def trigger_longterm_extract(
                 new_user_msg_count=new_msg_count,
             )
 
-            await reset_longterm_extract_position(session_id, len(messages))
+            await redis_service.set_longterm_extract_position(session_id, len(messages))
 
         except Exception as e:
             logger.error(
@@ -172,9 +170,8 @@ async def reset_longterm_extract_position(session_id: str, position: int) -> Non
         position: 提取位置（消息总数）
     """
     try:
-        from app.infrastructure.redis_client import get_redis
-        r = await get_redis()
-        await r.set(f"ltm_last_extract:{session_id}", str(position))
+        redis_service = get_redis_service()
+        await redis_service.set_longterm_extract_position(session_id, position)
         logger.debug("长期记忆提取位置已更新", session_id=session_id, position=position)
     except Exception as e:
         logger.warning("更新长期记忆提取位置失败", session_id=session_id, error=str(e))
@@ -191,12 +188,8 @@ async def get_longterm_extract_position(session_id: str) -> int:
         已提取到的消息位置
     """
     try:
-        from app.infrastructure.redis_client import get_redis
-        r = await get_redis()
-        pos = await r.get(f"ltm_last_extract:{session_id}")
-        if pos:
-            return int(pos) if isinstance(pos, bytes) else int(pos)
-        return 0
+        redis_service = get_redis_service()
+        return await redis_service.get_longterm_extract_position(session_id)
     except Exception as e:
         logger.warning("获取长期记忆提取位置失败", session_id=session_id, error=str(e))
         return 0

@@ -437,9 +437,12 @@ ai-agent-engine/
 │   │   └── rag/
 │   │       └── engine.py               # RAG 引擎
 │   ├── infrastructure/
-│   │   ├── redis_client.py             # Redis 客户端
-│   │   ├── db_client.py                # PostgreSQL 客户端
-│   │   └── mq_client.py                # RabbitMQ 客户端
+│   │   ├── redis_client.py             # Redis 客户端 (底层连接)
+│   │   ├── db_client.py                # PostgreSQL 客户端 (底层连接)
+│   │   ├── mq_client.py                # RabbitMQ 客户端 (底层连接)
+│   │   ├── redis_service.py            # Redis 基础设施服务 (短期记忆/Checkpoint/位置存储)
+│   │   ├── db_service.py               # PostgreSQL 基础设施服务 (Checkpoint持久化)
+│   │   └── mq_publisher.py             # RabbitMQ 发布服务 (异步任务发布)
 │   ├── tools/                          # 工具层 (MCP)
 │   │   ├── base.py                     # 工具基类
 │   │   ├── registry.py                 # 工具注册表
@@ -477,6 +480,50 @@ ai-agent-engine/
 | `AGENT_MODEL_NAME` | qwen3-max | Agent LLM 模型名称 |
 | `LOG_LEVEL` | INFO | 日志级别 |
 | `LOG_FORMAT` | json | 日志格式 (json/console) |
+
+## 架构原则
+
+### 分层设计
+
+本项目采用清晰的分层架构，确保各层职责明确、耦合度低：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      业务层 (Business)                        │
+│  shortmem.py / checkpoint/saver.py / handlers.py            │
+│  ✅ 调用基础设施服务，不直接操作底层客户端                      │
+└─────────────────────────────┬───────────────────────────────┘
+                              │
+┌─────────────────────────────▼───────────────────────────────┐
+│                  基础设施服务层 (Infrastructure Service)      │
+│  redis_service.py / db_service.py / mq_publisher.py         │
+│  ✅ 封装所有 Redis/DB/MQ 操作，提供高级业务方法               │
+└─────────────────────────────┬───────────────────────────────┘
+                              │
+┌─────────────────────────────▼───────────────────────────────┐
+│                    客户端层 (Clients)                         │
+│  redis_client.py / db_client.py / mq_client.py               │
+│  ✅ 仅负责连接管理和基础操作，被服务层内部调用                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 服务职责
+
+| 服务层 | 职责 |
+|--------|------|
+| **RedisService** | 短期记忆（摘要/计数器）、长期记忆位置、Checkpoint读写 |
+| **DbService** | Checkpoint 持久化、查询 |
+| **MQPublisher** | 短期记忆压缩任务、长期记忆提取任务、Checkpoint持久化任务 |
+
+### 重构收益
+
+| 方面 | 收益 |
+|------|------|
+| **耦合度** | 业务层直接依赖抽象服务接口，而非具体实现 |
+| **可测试性** | 易于注入 mock 服务进行单元测试 |
+| **可替换性** | 更换 Redis/DB 只需修改 service 实现 |
+| **可维护性** | 基础设施逻辑集中管理 |
+| **可读性** | 业务代码清晰专注业务逻辑 |
 
 ## 开发指南
 
