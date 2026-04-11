@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -45,9 +45,13 @@ class Settings(BaseSettings):
         default=10, description="RabbitMQ消费者预取数量"
     )
 
-    openai_api_key: str = Field(default="", description="OpenAI API Key")
+    openai_api_key: str = Field(
+        default="",
+        description="OpenAI API Key - 生产环境必须设置",
+    )
     openai_base_url: str = Field(
-        default="https://api.openai.com/v1", description="OpenAI API Base URL"
+        default="https://api.openai.com/v1",
+        description="OpenAI API Base URL",
     )
     openai_embedding_model: str = Field(
         default="text-embedding-v3", description="Embedding模型名称"
@@ -72,6 +76,16 @@ class Settings(BaseSettings):
     langchain_project: str = Field(
         default="ai-agent-engine", description="LangChain项目名称"
     )
+
+    @field_validator("openai_api_key", mode="before")
+    @classmethod
+    def validate_api_key(cls, v: str) -> str:
+        if not v or v == "sk-your-api-key-here":
+            raise ValueError(
+                "openai_api_key is required and must be a valid API key. "
+                "Please set your OpenAI API key in the OPENAI_API_KEY environment variable."
+            )
+        return v
 
 
 @lru_cache

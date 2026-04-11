@@ -36,8 +36,8 @@
 │  └─────────────────────────────────────────────────────────────┘  │
 │                                                                    │
 │  ┌──────────────┐  ┌──────────────────┐  ┌────────────────────┐  │
-│  │  记忆系统     │  │  异步消息队列     │  │  工具系统 (MCP)   │  │
-│  │  短期+长期    │  │  (RabbitMQ)      │  │                   │  │
+│  │ 记忆系统     │  │ 异步消息队列     │  │ 工具系统 (MCP)   │  │
+│  │ 短期+长期    │  │ (RabbitMQ)      │  │                   │  │
 │  └──────────────┘  └──────────────────┘  └────────────────────┘  │
 └──────────┬───────────────┬──────────────────┬────────────────────┘
            │               │                  │
@@ -60,7 +60,7 @@
 - **短期记忆（动态压缩）**:
   - 消息 < 10 条：全量携带
   - 消息 >= 10 条：MQ 异步压缩，生成摘要
-  - 后续携带：`[摘要]` + `[最新消息]`
+  - 后续携带：`[摘要]` + [最新消息]
   - 保留策略：始终保留最新 5 条不压缩
 - **长期记忆**: PostgreSQL + pgvector 存储用户画像、偏好、项目背景
 - **异步提取**: RabbitMQ 驱动，每 10 条用户消息触发一次长期记忆提取
@@ -294,7 +294,6 @@ MQ Worker:
 
 **存储位置**：
 - Redis Key: `stm_summary:{session_id}` — 对话摘要
-- Redis Key: `stm_msg_count:{session_id}` — 消息计数（预留）
 
 **注入方式**：
 - 拼接到 system prompt 作为上下文
@@ -397,42 +396,37 @@ ai-agent-engine/
 │   │   └── settings.py                  # 全局配置 (Pydantic Settings)
 │   ├── api/
 │   │   ├── router.py                    # 路由注册
-│   │   ├── deps.py                     # 依赖注入 (OrchestratorEngine)
+│   │   ├── deps.py                      # 依赖注入 (OrchestratorEngine)
 │   │   ├── v1/
-│   │   │   ├── agent.py                # 对话接口 (流式/非流式)
+│   │   │   ├── agent.py                 # 对话接口 (流式/非流式)
 │   │   │   ├── rag.py                  # RAG 接口
-│   │   │   └── health.py               # 健康检查
+│   │   │   └── health.py                # 健康检查
 │   │   └── schemas/
-│   │       ├── chat_request.py         # 请求模型
-│   │       └── chat_response.py        # 响应模型
+│   │       ├── chat_request.py          # 请求模型
+│   │       └── chat_response.py         # 响应模型
 │   ├── core/
 │   │   ├── agent/
-│   │   │   ├── engine.py               # AgentEngine + OrchestratorEngine
-│   │   │   ├── graph/
-│   │   │   │   └── __init__.py         # build_react_agent 构建
-│   │   │   └── prompts/
-│   │   │       └── agent_prompt.py     # ReAct Agent 系统提示词
+│   │   │   └── engine.py                # OrchestratorEngine 工厂函数
 │   │   ├── llm/
-│   │   │   └── service.py              # LLM 调用服务 (DashScope)
+│   │   │   └── service.py               # LLM 调用服务 (DashScope)
 │   │   ├── memory/
-│   │   │   ├── loader.py               # 记忆加载与组装
-│   │   │   ├── shortmem.py             # 短期记忆压缩 (MQ 触发 + Redis 存储)
+│   │   │   ├── loader.py                # 长期记忆加载器
+│   │   │   ├── shortmem.py              # 短期记忆压缩 (Redis)
 │   │   │   ├── checkpoint/
-│   │   │   │   └── saver.py            # Checkpoint 两级缓存 (Redis + PG)
-│   │   │   ├── summary/
-│   │   │   │   └── service.py          # 会话摘要服务
+│   │   │   │   └── saver.py             # Checkpoint 两级缓存 (Redis + PG)
 │   │   │   ├── longterm/
-│   │   │   │   └── extractor.py        # 长期记忆提取器
+│   │   │   │   └── extractor.py         # 长期记忆提取器
 │   │   │   └── mq/
-│   │   │       ├── service.py          # RabbitMQ 消息队列服务
-│   │   │       ├── handlers.py         # MQ 消息处理器
-│   │   │       └── __init__.py         # MQ 模块导出
-│   │   ├── orchestrator/               # 多级 Agent 编排模块
+│   │   │       ├── service.py           # RabbitMQ 消息队列服务
+│   │   │       └── handlers.py          # MQ 消息处理器
+│   │   ├── orchestrator/                # 多级 Agent 编排模块
 │   │   │   ├── graph.py                # 编排图定义 (Router + 条件路由)
 │   │   │   ├── state.py                # OrchestratorState 定义
 │   │   │   ├── schemas.py              # ExecutionPlan / JudgeResult 等
 │   │   │   ├── prompts.py              # 各节点系统提示词
 │   │   │   ├── memory.py               # 编排器全局记忆组件
+│   │   │   ├── simple_agent.py         # ReAct Agent 构建函数
+│   │   │   ├── utils.py                # 编排器公共工具函数
 │   │   │   └── nodes/
 │   │   │       ├── router.py           # 复杂度路由节点
 │   │   │       ├── simple_handler.py   # 简单任务处理器
@@ -446,17 +440,19 @@ ai-agent-engine/
 │   │   ├── redis_client.py             # Redis 客户端
 │   │   ├── db_client.py                # PostgreSQL 客户端
 │   │   └── mq_client.py                # RabbitMQ 客户端
-│   ├── models/                         # 模型层
 │   ├── tools/                          # 工具层 (MCP)
+│   │   ├── base.py                     # 工具基类
 │   │   ├── registry.py                 # 工具注册表
-│   │   └── __init__.py
+│   │   └── mcp/
+│   │       ├── adapter.py              # MCP 工具适配器
+│   │       └── client.py               # MCP 客户端
 │   └── utils/
 │       ├── logger.py                   # 结构化日志 (structlog)
 │       ├── trace.py                    # 链路追踪上下文
 │       ├── retry.py                    # 重试工具
 │       └── sse.py                      # SSE 工具
 ├── scripts/
-│   └── init_db.py                     # 数据库初始化脚本
+│   └── init_db.py                      # 数据库初始化脚本
 ├── tests/                              # 测试
 ├── docker-compose.yml                  # Docker Compose
 ├── Dockerfile                          # Docker 镜像

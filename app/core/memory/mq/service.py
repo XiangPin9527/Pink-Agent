@@ -160,8 +160,38 @@ class MQService:
         )
 
 
+_mq_service_instance: MQService | None = None
+_mq_service_lock = asyncio.Lock()
+
+
+def get_mq_service() -> MQService:
+    global _mq_service_instance
+    if _mq_service_instance is None:
+        _mq_service_instance = MQService()
+    return _mq_service_instance
+
+
+async def get_mq_service_instance() -> MQService:
+    global _mq_service_instance
+    async with _mq_service_lock:
+        if _mq_service_instance is None:
+            _mq_service_instance = MQService()
+    return _mq_service_instance
+
+
+async def close_mq_service() -> None:
+    global _mq_service_instance
+    async with _mq_service_lock:
+        if _mq_service_instance is not None:
+            await _mq_service_instance.stop_workers()
+            _mq_service_instance = None
+
+
 __all__ = [
     "MQService",
+    "get_mq_service",
+    "get_mq_service_instance",
+    "close_mq_service",
     "ROUTING_CHECKPOINT_PERSIST",
     "ROUTING_CHECKPOINT_WRITES",
     "ROUTING_LONGTERM",

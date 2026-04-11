@@ -1,10 +1,9 @@
 """
-测试 Agent ReAct 图
+测试 Simple Agent ReAct 图
 """
 import pytest
 
-from app.core.agent.graph import build_react_agent
-from app.core.agent.graph.state import AgentState
+from app.core.orchestrator.simple_agent import build_react_agent
 from app.core.llm import get_llm_service
 
 

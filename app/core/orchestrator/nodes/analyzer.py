@@ -12,6 +12,7 @@ from langchain_core.messages import BaseMessage
 from app.core.orchestrator.state import OrchestratorState
 from app.core.orchestrator.schemas import ExecutionPlan, ExecutionStep, StreamEvent
 from app.core.orchestrator.prompts import ANALYZER_SYSTEM_PROMPT, ANALYZER_USER_PROMPT
+from app.core.orchestrator.utils import _extract_recent_messages, load_ltm_context
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -33,12 +34,6 @@ def _get_tool_schemas() -> List[Dict[str, str]]:
     except Exception as e:
         logger.warning("获取工具列表失败，使用空列表", error=str(e))
         return []
-
-
-def _extract_recent_messages(messages: List[BaseMessage], max_count: int = MAX_RECENT_MESSAGES) -> List[BaseMessage]:
-    if len(messages) <= 1:
-        return []
-    return messages[-(max_count + 1):-1]
 
 
 def _parse_json_response(content: str) -> Dict[str, Any]:
@@ -99,23 +94,10 @@ async def analyzer(state: OrchestratorState) -> OrchestratorState:
         data={"message": message[:100]}
     )
 
-    ltm_context = ""
     memory_loader = get_memory_loader()
-    if memory_loader and user_id and message:
-        try:
-            raw_ltm = await memory_loader.load_long_term_memory(user_id, message)
-            ltm_strings = [
-                item["value"].get("content", str(item["value"]))
-                for item in raw_ltm
-                if item.get("value")
-            ]
-            if ltm_strings:
-                ltm_context = "\n\n已知用户背景信息：\n" + "\n".join(
-                    f"- {item}" for item in ltm_strings
-                )
-                logger.info("Analyzer 长期记忆加载完成", ltm_strings=ltm_strings)
-        except Exception as e:
-            logger.warning("Analyzer 长期记忆加载失败", error=str(e))
+    ltm_context = await load_ltm_context(memory_loader, user_id, message)
+    if ltm_context:
+        logger.info("Analyzer 长期记忆加载完成", ltm_context=ltm_context)
 
     stm_summary = await get_short_term_summary(session_id)
 

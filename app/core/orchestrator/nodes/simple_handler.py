@@ -14,21 +14,16 @@ from langchain_core.messages import BaseMessage
 
 from app.core.orchestrator.state import OrchestratorState
 from app.core.orchestrator.schemas import StreamEvent
+from app.core.orchestrator.utils import _extract_recent_messages
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-def _extract_recent_messages(messages: List[BaseMessage], max_count: int) -> List[BaseMessage]:
-    if len(messages) <= 1:
-        return []
-    return messages[-(max_count + 1):-1]
-
-
 async def simple_handler(state: OrchestratorState) -> OrchestratorState:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from app.core.orchestrator.memory import get_memory_loader
-    from app.core.agent.graph import build_react_agent
+    from app.core.orchestrator.simple_agent import build_react_agent
     from app.core.llm.service import get_llm_service
     from app.core.memory.shortmem import (
         get_short_term_summary,
@@ -131,7 +126,7 @@ async def simple_handler(state: OrchestratorState) -> OrchestratorState:
     all_messages_for_compress = list(messages) + [AIMessage(content=final_content)]
     await increment_and_check_compress(session_id, all_messages_for_compress, stm_summary)
 
-    from app.core.orchestrator.nodes.utils import trigger_longterm_extract
+    from app.core.orchestrator.utils import trigger_longterm_extract
     await trigger_longterm_extract(user_id, session_id, state["messages"])
 
     state["stream_event"] = StreamEvent(

@@ -1,3 +1,5 @@
+import asyncio
+
 import asyncpg
 from app.config.settings import get_settings
 from app.utils.logger import get_logger
@@ -5,6 +7,7 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _db_pool: asyncpg.Pool | None = None
+_db_pool_lock = asyncio.Lock()
 
 
 def _normalize_dsn(dsn: str) -> str:
@@ -14,14 +17,16 @@ def _normalize_dsn(dsn: str) -> str:
 async def get_db_pool() -> asyncpg.Pool:
     global _db_pool
     if _db_pool is None:
-        settings = get_settings()
-        dsn = _normalize_dsn(settings.database_url)
-        _db_pool = await asyncpg.create_pool(
-            dsn,
-            min_size=5,
-            max_size=settings.database_pool_size,
-        )
-        logger.info("PostgreSQL 连接池初始化完成", dsn=dsn.split("@")[-1] if "@" in dsn else dsn)
+        async with _db_pool_lock:
+            if _db_pool is None:
+                settings = get_settings()
+                dsn = _normalize_dsn(settings.database_url)
+                _db_pool = await asyncpg.create_pool(
+                    dsn,
+                    min_size=5,
+                    max_size=settings.database_pool_size,
+                )
+                logger.info("PostgreSQL 连接池初始化完成", dsn=dsn.split("@")[-1] if "@" in dsn else dsn)
     return _db_pool
 
 

@@ -9,15 +9,10 @@ from langchain_core.messages import BaseMessage
 
 from app.core.orchestrator.state import OrchestratorState
 from app.core.orchestrator.schemas import StreamEvent
+from app.core.orchestrator.utils import _extract_recent_messages, load_ltm_context
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-def _extract_recent_messages(messages: List[BaseMessage], max_count: int) -> List[BaseMessage]:
-    if len(messages) <= 1:
-        return []
-    return messages[-(max_count + 1):-1]
 
 
 EXECUTOR_SYSTEM_PROMPT = """你是一个任务执行专家。你需要根据分析专家的规划，执行具体任务。
@@ -92,18 +87,11 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
     ltm_context = ""
     memory_loader = get_memory_loader()
     if memory_loader and user_id:
-        try:
-            raw_ltm = await memory_loader.load_long_term_memory(user_id, plan.reasoning or "")
-            ltm_strings = [
-                item["value"].get("content", str(item["value"]))
-                for item in raw_ltm
-                if item.get("value")
-            ]
-            if ltm_strings:
-                ltm_context = "\n".join(f"- {item}" for item in ltm_strings)
-                logger.info("Executor 长期记忆加载完成", ltm_strings=ltm_strings)
-        except Exception as e:
-            logger.warning("Executor 长期记忆加载失败", error=str(e))
+        ltm_raw = await load_ltm_context(memory_loader, user_id, plan.reasoning or "")
+        if ltm_raw:
+            import re
+            ltm_context = re.sub(r"^\n\n已知用户背景信息：\n", "", ltm_raw)
+            logger.info("Executor 长期记忆加载完成", ltm_context=ltm_context)
 
     recent_history = _extract_recent_messages(messages, current_count if current_count > 0 else COMPRESS_THRESHOLD)
     recent_history_text = ""

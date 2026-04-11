@@ -1,3 +1,5 @@
+import asyncio
+
 import aio_pika
 
 from app.config.settings import get_settings
@@ -9,38 +11,48 @@ _connection: aio_pika.RobustConnection | None = None
 _channel: aio_pika.RobustChannel | None = None
 _exchange: aio_pika.RobustExchange | None = None
 
+_mq_conn_lock = asyncio.Lock()
+_mq_channel_lock = asyncio.Lock()
+_mq_exchange_lock = asyncio.Lock()
+
 
 async def get_mq_connection() -> aio_pika.RobustConnection:
     global _connection
     if _connection is None or _connection.is_closed:
-        settings = get_settings()
-        _connection = await aio_pika.connect_robust(settings.rabbitmq_url)
-        logger.info("RabbitMQ 连接初始化完成")
+        async with _mq_conn_lock:
+            if _connection is None or _connection.is_closed:
+                settings = get_settings()
+                _connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+                logger.info("RabbitMQ 连接初始化完成")
     return _connection
 
 
 async def get_mq_channel() -> aio_pika.RobustChannel:
     global _channel
     if _channel is None or _channel.is_closed:
-        conn = await get_mq_connection()
-        settings = get_settings()
-        _channel = await conn.channel()
-        await _channel.set_qos(prefetch_count=settings.rabbitmq_prefetch_count)
-        logger.info("RabbitMQ Channel 初始化完成", prefetch=settings.rabbitmq_prefetch_count)
+        async with _mq_channel_lock:
+            if _channel is None or _channel.is_closed:
+                conn = await get_mq_connection()
+                settings = get_settings()
+                _channel = await conn.channel()
+                await _channel.set_qos(prefetch_count=settings.rabbitmq_prefetch_count)
+                logger.info("RabbitMQ Channel 初始化完成", prefetch=settings.rabbitmq_prefetch_count)
     return _channel
 
 
 async def get_mq_exchange() -> aio_pika.RobustExchange:
     global _exchange
     if _exchange is None:
-        ch = await get_mq_channel()
-        settings = get_settings()
-        _exchange = await ch.declare_exchange(
-            settings.rabbitmq_exchange,
-            aio_pika.ExchangeType.TOPIC,
-            durable=True,
-        )
-        logger.info("RabbitMQ Exchange 声明完成", exchange=settings.rabbitmq_exchange)
+        async with _mq_exchange_lock:
+            if _exchange is None:
+                ch = await get_mq_channel()
+                settings = get_settings()
+                _exchange = await ch.declare_exchange(
+                    settings.rabbitmq_exchange,
+                    aio_pika.ExchangeType.TOPIC,
+                    durable=True,
+                )
+                logger.info("RabbitMQ Exchange 声明完成", exchange=settings.rabbitmq_exchange)
     return _exchange
 
 

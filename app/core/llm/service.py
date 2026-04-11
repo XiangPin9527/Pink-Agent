@@ -70,47 +70,6 @@ class LLMService:
             )
 
         return self._model_cache[cache_key]
-    
-    @staticmethod
-    def _build_messages(
-        prompt: str,
-        system_prompt: Optional[str],
-        short_term_memory: List[Dict[str, str]],
-        long_term_memory: List[str],
-    ) -> List:
-        """
-        构建消息列表
-        
-        包含系统提示、长期记忆、短期记忆和当前用户输入
-        """
-        messages = []
-
-        if system_prompt:
-            messages.append(SystemMessage(content=system_prompt))
-
-        if long_term_memory:
-            ltm_context = "已知关于该用户的背景信息：\n" + "\n".join(
-                f"- {item}" for item in long_term_memory
-            )
-            messages.append(SystemMessage(content=ltm_context))
-
-        for msg in short_term_memory:
-            if isinstance(msg, dict):
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-            elif hasattr(msg, "type") and hasattr(msg, "content"):
-                role = "assistant" if msg.type == "ai" else "user" if msg.type == "human" else msg.type
-                content = str(msg.content)
-            else:
-                continue
-            if role == "user":
-                messages.append(HumanMessage(content=content))
-            elif role == "assistant":
-                messages.append(AIMessage(content=content))
-
-        messages.append(HumanMessage(content=prompt))
-
-        return messages
 
 
 _llm_service: Optional[LLMService] = None

@@ -12,6 +12,8 @@
 """
 
 from app.utils.logger import get_logger
+from app.infrastructure.redis_client import get_redis
+from app.core.memory.mq import get_mq_service
 
 logger = get_logger(__name__)
 
@@ -45,7 +47,6 @@ async def get_short_term_summary(session_id: str) -> str:
         摘要内容，如果不存在则返回空字符串
     """
     try:
-        from app.infrastructure.redis_client import get_redis
         r = await get_redis()
         summary = await r.get(get_summary_key(session_id))
         if summary:
@@ -68,7 +69,6 @@ async def set_short_term_summary(session_id: str, summary: str) -> bool:
         是否更新成功
     """
     try:
-        from app.infrastructure.redis_client import get_redis
         r = await get_redis()
         await r.set(get_summary_key(session_id), summary)
         return True
@@ -88,7 +88,6 @@ async def get_msg_count(session_id: str) -> int:
         消息计数
     """
     try:
-        from app.infrastructure.redis_client import get_redis
         r = await get_redis()
         count = await r.get(get_msg_count_key(session_id))
         if count:
@@ -111,7 +110,6 @@ async def set_msg_count(session_id: str, count: int) -> bool:
         是否更新成功
     """
     try:
-        from app.infrastructure.redis_client import get_redis
         r = await get_redis()
         await r.set(get_msg_count_key(session_id), count)
         return True
@@ -131,7 +129,6 @@ async def increment_msg_count(session_id: str) -> int:
         递增后的计数
     """
     try:
-        from app.infrastructure.redis_client import get_redis
         r = await get_redis()
         new_count = await r.incr(get_msg_count_key(session_id))
         return int(new_count)
@@ -197,8 +194,7 @@ async def increment_and_check_compress(
         )
 
         if new_count >= COMPRESS_THRESHOLD:
-            from app.core.memory.mq import MQService
-            mq = MQService()
+            mq = get_mq_service()
             await mq.publish(
                 ROUTING_SHORTMEM_COMPRESS,
                 {
@@ -236,7 +232,6 @@ async def reset_msg_count_after_compress(session_id: str) -> bool:
         是否重置成功
     """
     try:
-        from app.infrastructure.redis_client import get_redis
         r = await get_redis()
         await r.set(get_msg_count_key(session_id), KEEP_FRESH_MESSAGES)
         logger.debug(

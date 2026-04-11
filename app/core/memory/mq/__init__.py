@@ -1,5 +1,8 @@
 from app.core.memory.mq.service import (
     MQService,
+    get_mq_service,
+    get_mq_service_instance,
+    close_mq_service,
     ROUTING_CHECKPOINT_PERSIST,
     ROUTING_CHECKPOINT_WRITES,
     ROUTING_LONGTERM,
@@ -19,6 +22,9 @@ from app.core.memory.mq.handlers import (
 
 __all__ = [
     "MQService",
+    "get_mq_service",
+    "get_mq_service_instance",
+    "close_mq_service",
     "ROUTING_CHECKPOINT_PERSIST",
     "ROUTING_CHECKPOINT_WRITES",
     "ROUTING_LONGTERM",

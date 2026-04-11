@@ -1,4 +1,5 @@
 import base64
+import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -16,6 +17,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from app.infrastructure.redis_client import get_redis
 from app.infrastructure.db_client import get_db_pool
 from app.utils.logger import get_logger
+from app.core.memory.mq.service import get_mq_service, ROUTING_CHECKPOINT_PERSIST, ROUTING_CHECKPOINT_WRITES
 
 logger = get_logger(__name__)
 
@@ -181,18 +183,21 @@ class RedisPostgresSaver(BaseCheckpointSaver):
                     FROM checkpoints
                     WHERE thread_id = $1 AND checkpoint_ns = $2
                 """
-                args: list = [thread_id, ns]
+                args: list[Any] = [thread_id, ns]
+                arg_idx = 3
 
                 if before:
                     before_id = before.get("configurable", {}).get("checkpoint_id")
                     if before_id:
-                        sql += " AND created_at < (SELECT created_at FROM checkpoints WHERE checkpoint_id = $3)"
+                        sql += f" AND created_at < (SELECT created_at FROM checkpoints WHERE checkpoint_id = ${arg_idx})"
                         args.append(before_id)
+                        arg_idx += 1
 
                 sql += " ORDER BY created_at DESC"
 
                 if limit:
-                    sql += f" LIMIT {limit}"
+                    sql += f" LIMIT ${arg_idx}"
+                    args.append(limit)
 
                 rows = await conn.fetch(sql, *args)
 
@@ -259,9 +264,7 @@ class RedisPostgresSaver(BaseCheckpointSaver):
         data: bytes,
         metadata: bytes | None,
     ) -> None:
-        from app.core.memory.mq import MQService, ROUTING_CHECKPOINT_PERSIST
-
-        mq = MQService()
+        mq = get_mq_service()
         await mq.publish(
             ROUTING_CHECKPOINT_PERSIST,
             {
@@ -283,9 +286,7 @@ class RedisPostgresSaver(BaseCheckpointSaver):
         task_id: str,
         writes: Sequence[tuple[str, Any]],
     ) -> None:
-        from app.core.memory.mq import MQService, ROUTING_CHECKPOINT_WRITES
-
-        mq = MQService()
+        mq = get_mq_service()
         for idx, (channel, value) in enumerate(writes):
             write_type, write_blob = self.serde.dumps_typed(value)
             await mq.publish(
