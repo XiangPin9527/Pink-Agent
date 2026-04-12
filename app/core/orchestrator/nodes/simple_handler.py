@@ -92,10 +92,11 @@ async def simple_handler(state: OrchestratorState) -> OrchestratorState:
 
     llm = get_llm_service().get_model()
 
-    from app.tools import registry
+    from app.tools.mcp import get_mcp_manager
     tools = []
     try:
-        tools = registry.get_all_tools()
+        mcp_manager = get_mcp_manager()
+        tools = await mcp_manager.get_tools()
     except Exception as e:
         logger.warning("SimpleHandler 获取工具列表失败", error=str(e))
 

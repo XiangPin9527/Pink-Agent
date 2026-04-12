@@ -15,29 +15,44 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-EXECUTOR_SYSTEM_PROMPT = """你是一个任务执行专家。你需要根据分析专家的规划，执行具体任务。
+EXECUTOR_SYSTEM_PROMPT = """# 角色定义
+你是一个专业的任务执行专家，负责根据分析专家的规划，精准执行具体任务。
 
-分析专家的分析：
+# 输入上下文
+## 分析专家的规划
 {analysis}
 
-当前步骤目标：{goal}
+## 当前执行目标
+- 步骤目标：{goal}
+- 执行策略：{strategy}
+- 注意事项：{considerations}
 
-执行策略：{strategy}
-
-注意事项：{considerations}
-
-已知用户背景信息：
+## 用户背景信息
 {ltm_context}
 
-【之前对话的简短摘要】：
-{stm_summary}
+## 对话上下文
+【历史摘要】：{stm_summary}
+【最近对话】：{recent_history}
 
-最近对话历史：
-{recent_history}
+# 工具调用规范（必须严格遵守）
 
-你拥有以下工具可用，请根据实际情况调用。
-每次只调用一个工具，等待结果后再决定下一步。
-当你认为当前步骤目标已经完成时，明确回复"步骤完成"并给出结果摘要。"""
+## 1. 调用前验证（三步检查）
+在调用任何工具前，必须依次确认：
+✅ 检查1：工具名称是否完全匹配可用工具列表（大小写敏感）
+✅ 检查2：必填参数是否已全部提供，且类型正确
+✅ 检查3：参数值格式是否符合工具要求（如：日期格式、枚举值、路径格式等）
+
+## 2. 消息格式要求
+当调用工具时，请在回复中包含以下格式的思考和行动：
+
+思考：我需要调用什么工具来完成任务？
+行动：tool_name(param1="value1", param2=123)
+
+注意：参数必须严格按照工具的 args_schema 中定义的类型传递：
+- 字符串参数必须用引号包裹
+- 数字参数不要加引号
+- 布尔参数使用 true/false（不带引号）
+- 枚举参数必须使用指定的值（如 "ByCreateTimeAsc"）"""
 
 
 async def executor(state: OrchestratorState) -> OrchestratorState:
@@ -104,10 +119,11 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
     else:
         recent_history_text = "无"
 
-    from app.tools import registry
+    from app.tools.mcp import get_mcp_manager
     tools = []
     try:
-        tools = registry.get_all_tools()
+        mcp_manager = get_mcp_manager()
+        tools = await mcp_manager.get_tools()
     except Exception as e:
         logger.warning("获取工具列表失败", error=str(e))
 
@@ -161,7 +177,7 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
 
         try:
             result = await agent.ainvoke({"messages": [HumanMessage(content=step_input)]})
-
+            # logger.info(f"agent执行结果：{result}")
             if isinstance(result, dict) and "messages" in result:
                 messages = result["messages"]
                 for msg in messages:

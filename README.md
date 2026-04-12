@@ -444,11 +444,15 @@ ai-agent-engine/
 │   │   ├── db_service.py               # PostgreSQL 基础设施服务 (Checkpoint持久化)
 │   │   └── mq_publisher.py             # RabbitMQ 发布服务 (异步任务发布)
 │   ├── tools/                          # 工具层 (MCP)
+│   │   ├── __init__.py                  # 工具层导出
 │   │   ├── base.py                     # 工具基类
 │   │   ├── registry.py                 # 工具注册表
 │   │   └── mcp/
+│   │       ├── __init__.py             # MCP 模块导出
 │   │       ├── adapter.py              # MCP 工具适配器
-│   │       └── client.py               # MCP 客户端
+│   │       ├── client.py               # MCP 客户端 (占位符)
+│   │       ├── config.py               # MCP 配置加载器
+│   │       └── manager.py              # MCP 服务管理器
 │   └── utils/
 │       ├── logger.py                   # 结构化日志 (structlog)
 │       ├── trace.py                    # 链路追踪上下文
@@ -480,6 +484,80 @@ ai-agent-engine/
 | `AGENT_MODEL_NAME` | qwen3-max | Agent LLM 模型名称 |
 | `LOG_LEVEL` | INFO | 日志级别 |
 | `LOG_FORMAT` | json | 日志格式 (json/console) |
+
+## MCP 服务配置
+
+MCP (Model Context Protocol) 服务支持通过 YAML 配置文件集中管理多个 MCP 服务器。
+
+### 配置文件位置
+
+```
+app/config/mcp.yaml
+```
+
+### 配置示例
+
+```yaml
+mcp:
+  # 飞书 MCP
+  lark:
+    enabled: true  # 设置为 true 启用
+    command: npx
+    args:
+      - "-y"
+      - "@larksuiteoapi/lark-mcp"
+      - "mcp"
+      - "-a"
+      - "YOUR_FEISHU_APP_ID"    # 硬编码 App ID
+      - "-s"
+      - "YOUR_FEISHU_APP_SECRET"  # 硬编码 App Secret
+    transport: stdio
+    env:
+      NODE_NO_WARNINGS: "1"
+    tags:
+      - lark
+      - feishu
+
+  # GitHub MCP
+  github:
+    enabled: false
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-github"
+    transport: stdio
+    tags:
+      - github
+```
+
+### 配置字段说明
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `enabled` | bool | 是 | 是否启用该 MCP 服务器 |
+| `command` | string | 是 | 启动命令 (如 npx, python, node) |
+| `args` | list | 是 | 命令参数列表 |
+| `transport` | string | 是 | 传输类型: stdio / http / sse / streamable_http |
+| `url` | string | 否 | HTTP 传输时的 URL |
+| `headers` | dict | 否 | HTTP 请求头 |
+| `env` | dict | 否 | 子进程环境变量 |
+| `tags` | list | 是 | 工具标签，用于分组获取工具 |
+
+### 使用工具
+
+```python
+from app.tools.mcp import get_mcp_manager
+
+# 获取所有 MCP 工具
+mcp_manager = get_mcp_manager()
+all_tools = await mcp_manager.get_tools()
+
+# 获取特定标签的工具
+lark_tools = await mcp_manager.get_tools(tags=["lark"])
+
+# 获取多个标签的工具
+selected_tools = await mcp_manager.get_tools(tags=["lark", "github"])
+```
 
 ## 架构原则
 

@@ -35,7 +35,15 @@ logger = get_logger(__name__)
 
 async def create_orchestrator_engine():
     """创建编排引擎（路由+简单/复杂双路径，带完整记忆系统）"""
+    from app.tools.mcp.manager import initialize_mcp
+
     settings = get_settings()
+
+    try:
+        await initialize_mcp()
+        logger.info("MCP 服务初始化完成")
+    except Exception as e:
+        logger.warning("MCP 服务初始化失败，将不使用 MCP 工具", error=str(e))
 
     checkpointer = RedisPostgresSaver()
 

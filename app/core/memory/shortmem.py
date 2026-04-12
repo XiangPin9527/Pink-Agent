@@ -17,8 +17,8 @@ from app.infrastructure.mq_publisher import get_mq_publisher
 
 logger = get_logger(__name__)
 
-COMPRESS_THRESHOLD = 10
-KEEP_FRESH_MESSAGES = 5
+COMPRESS_THRESHOLD = 30
+KEEP_FRESH_MESSAGES = 20
 
 ROUTING_SHORTMEM_COMPRESS = "shortmem.compress"
 

@@ -1,0 +1,14 @@
+mcp:
+  filesystem:
+    enabled: true
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-filesystem"
+      - "E:\\Python\\agent-pink"
+    transport: stdio
+    env:
+      NODE_NO_WARNINGS: "1"
+    tags:
+      - filesystem
+      - file

@@ -20,10 +20,11 @@ logger = get_logger(__name__)
 MAX_RECENT_MESSAGES = 20
 
 
-def _get_tool_schemas() -> List[Dict[str, str]]:
-    from app.tools import registry
+async def _get_tool_schemas() -> List[Dict[str, str]]:
+    from app.tools.mcp import get_mcp_manager
     try:
-        tools = registry.get_all_tools()
+        mcp_manager = get_mcp_manager()
+        tools = await mcp_manager.get_tools()
         schemas = []
         for tool in tools:
             schemas.append({
@@ -101,7 +102,7 @@ async def analyzer(state: OrchestratorState) -> OrchestratorState:
 
     stm_summary = await get_short_term_summary(session_id)
 
-    tool_schemas = _get_tool_schemas()
+    tool_schemas = await _get_tool_schemas()
     tool_schemas_text = "\n".join(
         f"- {t['name']}: {t['description']}" for t in tool_schemas
     )
