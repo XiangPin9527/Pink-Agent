@@ -173,9 +173,87 @@ async def _generate_summary(
         return old_summary
 
 
+async def handle_rag_ingest_repo(message: dict[str, Any]) -> None:
+    task_id = message.get("task_id", "")
+    repo_url = message.get("repo_url", "")
+    project_name = message.get("project_name", "")
+    branch = message.get("branch", "main")
+    target_extensions = message.get("target_extensions")
+
+    if not repo_url or not project_name:
+        logger.warning("RAG 仓库入库任务缺少必要参数", task_id=task_id)
+        return
+
+    try:
+        redis_service = get_redis_service()
+        await redis_service.set_rag_task_status(task_id, "processing")
+
+        from app.core.rag.engine import get_rag_engine
+        rag_engine = get_rag_engine()
+        repo_info = await rag_engine.ingest_repo(
+            repo_url=repo_url,
+            project_name=project_name,
+            branch=branch,
+            target_extensions=target_extensions,
+        )
+
+        await redis_service.set_rag_task_status(task_id, "completed", {
+            "project_name": project_name,
+            "file_count": repo_info.file_count,
+            "total_size": repo_info.total_size,
+        })
+        logger.info(
+            "RAG 仓库入库完成",
+            task_id=task_id,
+            project_name=project_name,
+            file_count=repo_info.file_count,
+        )
+    except Exception as e:
+        logger.error("RAG 仓库入库失败", task_id=task_id, error=str(e))
+        try:
+            await redis_service.set_rag_task_status(task_id, "failed", {"error": str(e)})
+        except Exception:
+            pass
+
+
+async def handle_rag_ingest_files(message: dict[str, Any]) -> None:
+    task_id = message.get("task_id", "")
+    project_name = message.get("project_name", "")
+    files = message.get("files", [])
+
+    if not project_name or not files:
+        logger.warning("RAG 文件入库任务缺少必要参数", task_id=task_id)
+        return
+
+    try:
+        redis_service = get_redis_service()
+        await redis_service.set_rag_task_status(task_id, "processing")
+
+        from app.core.rag.engine import get_rag_engine
+        rag_engine = get_rag_engine()
+        inserted = await rag_engine.ingest_files(
+            project_name=project_name,
+            files=files,
+        )
+
+        await redis_service.set_rag_task_status(task_id, "completed", {
+            "project_name": project_name,
+            "inserted": inserted,
+        })
+        logger.info("RAG 文件入库完成", task_id=task_id, project_name=project_name, inserted=inserted)
+    except Exception as e:
+        logger.error("RAG 文件入库失败", task_id=task_id, error=str(e))
+        try:
+            await redis_service.set_rag_task_status(task_id, "failed", {"error": str(e)})
+        except Exception:
+            pass
+
+
 __all__ = [
     "handle_checkpoint_persist",
     "handle_checkpoint_writes",
     "handle_longterm_extract",
     "handle_shortmem_compress",
+    "handle_rag_ingest_repo",
+    "handle_rag_ingest_files",
 ]

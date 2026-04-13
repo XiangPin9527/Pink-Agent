@@ -3,15 +3,13 @@ Analyzer 节点
 
 分析规划：携带全部工具定义 + 长期记忆，制定分步执行策略
 """
-import json
-import re
-from typing import Any, Dict, List
+from typing import Any, List
 
-from langchain_core.messages import BaseMessage
+from pydantic import BaseModel, Field
 
 from app.core.orchestrator.state import OrchestratorState
 from app.core.orchestrator.schemas import ExecutionPlan, ExecutionStep, StreamEvent
-from app.core.orchestrator.prompts import ANALYZER_SYSTEM_PROMPT, ANALYZER_USER_PROMPT
+from app.core.orchestrator.prompts import ANALYZER_USER_PROMPT
 from app.core.orchestrator.utils import _extract_recent_messages, load_ltm_context
 from app.utils.logger import get_logger
 
@@ -20,7 +18,21 @@ logger = get_logger(__name__)
 MAX_RECENT_MESSAGES = 20
 
 
-async def _get_tool_schemas() -> List[Dict[str, str]]:
+class ExecutionStepOutput(BaseModel):
+    step_id: int = Field(description="步骤编号")
+    goal: str = Field(description="本步骤的具体目标")
+    strategy: str = Field(description="本步骤的执行策略")
+    key_considerations: list[str] = Field(default_factory=list, description="注意事项")
+
+
+class ExecutionPlanOutput(BaseModel):
+    overall_goal: str = Field(description="用户的最终目标")
+    reasoning: str = Field(description="分析推理过程")
+    steps: list[ExecutionStepOutput] = Field(description="执行步骤列表")
+    tool_hints: list[str] = Field(default_factory=list, description="可能需要的工具类型")
+
+
+async def _get_tool_schemas() -> List[dict[str, str]]:
     from app.tools.mcp import get_mcp_manager
     try:
         mcp_manager = get_mcp_manager()
@@ -37,50 +49,30 @@ async def _get_tool_schemas() -> List[Dict[str, str]]:
         return []
 
 
-def _parse_json_response(content: str) -> Dict[str, Any]:
-    json_match = re.search(r"\{[\s\S]*\}", content)
-    if json_match:
-        try:
-            return json.loads(json_match.group())
-        except json.JSONDecodeError:
-            pass
-    return {}
-
-
-def _build_execution_plan(parsed: Dict[str, Any]) -> ExecutionPlan:
-    steps = []
-    overall_goal = parsed.get("overall_goal", "")
-    reasoning = parsed.get("reasoning", "")
-    tool_hints = parsed.get("tool_hints", [])
-
-    for step_data in parsed.get("steps", []):
-        try:
-            step = ExecutionStep(
-                step_id=step_data.get("step_id", 0),
-                goal=step_data.get("goal", ""),
-                strategy=step_data.get("strategy", ""),
-                key_considerations=step_data.get("key_considerations", []),
-            )
-            steps.append(step)
-        except Exception as e:
-            logger.warning("解析步骤失败", step_data=step_data, error=str(e))
-
+def _build_execution_plan(parsed: ExecutionPlanOutput) -> ExecutionPlan:
+    steps = [
+        ExecutionStep(
+            step_id=s.step_id,
+            goal=s.goal,
+            strategy=s.strategy,
+            key_considerations=s.key_considerations,
+        )
+        for s in parsed.steps
+    ]
     steps.sort(key=lambda s: s.step_id)
     return ExecutionPlan(
-        overall_goal=overall_goal,
-        reasoning=reasoning,
+        overall_goal=parsed.overall_goal,
+        reasoning=parsed.reasoning,
         steps=steps,
-        tool_hints=tool_hints,
+        tool_hints=parsed.tool_hints,
     )
 
 
 async def analyzer(state: OrchestratorState) -> OrchestratorState:
-    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.messages import HumanMessage
     from app.core.llm.service import get_llm_service
     from app.core.orchestrator.memory import get_memory_loader
-    from app.core.memory.shortmem import (
-        get_short_term_summary,
-    )
+    from app.core.memory.shortmem import get_short_term_summary
 
     session_id = state["session_id"]
     user_id = state["user_id"]
@@ -107,7 +99,17 @@ async def analyzer(state: OrchestratorState) -> OrchestratorState:
         f"- {t['name']}: {t['description']}" for t in tool_schemas
     )
 
-    system_prompt = ANALYZER_SYSTEM_PROMPT.format(tool_schemas=tool_schemas_text)
+    system_prompt = f"""你是一个任务分析规划专家。你的任务是对用户请求进行深度分析，制定执行策略。
+
+请分析用户请求，确定：
+1. 用户的最终目标是什么
+2. 需要分几个阶段/步骤来完成
+3. 每个步骤的子目标和执行策略
+4. 可用的工具提示（不需要指定具体工具名称，只需说明需要的工具类型）
+
+你拥有以下工具可用：
+{tool_schemas_text}
+"""
     system_prompt += ltm_context
 
     if stm_summary:
@@ -125,19 +127,17 @@ async def analyzer(state: OrchestratorState) -> OrchestratorState:
     user_prompt = ANALYZER_USER_PROMPT.format(user_message=message)
 
     llm = get_llm_service().get_model()
+    structured_llm = llm.with_structured_output(ExecutionPlanOutput)
 
     try:
-        response = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
+        response = await structured_llm.ainvoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ])
 
-        content = response.content
-        logger.info("Analyzer LLM 响应", session_id=session_id, content=content)
+        logger.info("Analyzer LLM 响应", session_id=session_id, response=response)
 
-        parsed = _parse_json_response(content)
-        plan = _build_execution_plan(parsed)
-
+        plan = _build_execution_plan(response)
         state["execution_plan"] = plan
         state["current_step_index"] = 0
 

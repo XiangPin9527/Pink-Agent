@@ -24,28 +24,6 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
 );
-
-CREATE TABLE IF NOT EXISTS checkpoint_blobs (
-    thread_id TEXT NOT NULL,
-    checkpoint_ns TEXT NOT NULL DEFAULT '',
-    channel TEXT NOT NULL,
-    version TEXT NOT NULL,
-    type TEXT NOT NULL,
-    blob BYTEA,
-    PRIMARY KEY (thread_id, checkpoint_ns, channel, version)
-);
-
-CREATE TABLE IF NOT EXISTS checkpoint_writes (
-    thread_id TEXT NOT NULL,
-    checkpoint_ns TEXT NOT NULL DEFAULT '',
-    checkpoint_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    idx INTEGER NOT NULL,
-    channel TEXT NOT NULL,
-    type TEXT,
-    blob BYTEA,
-    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
-);
 """
 
 CHECKPOINT_INDEX_DDL = """
@@ -75,6 +53,8 @@ async def init_database():
 
         await conn.execute(CHECKPOINT_INDEX_DDL)
         logger.info("Checkpoint 索引创建完成")
+
+        logger.info("code_vectors 表将由 PGVectorStore 在应用启动时自动创建")
     finally:
         await conn.close()
 

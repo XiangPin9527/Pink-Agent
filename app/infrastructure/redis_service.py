@@ -115,6 +115,41 @@ class RedisService:
             logger.error("设置长期记忆提取位置失败", thread_id=thread_id, error=str(e))
             return False
 
+    REDIS_KEY_RAG_TASK_PREFIX = "rag_task"
+
+    def _get_rag_task_key(self, task_id: str) -> str:
+        return f"{self.REDIS_KEY_RAG_TASK_PREFIX}:{task_id}"
+
+    async def set_rag_task_status(
+        self, task_id: str, status: str, result: dict | None = None
+    ) -> bool:
+        try:
+            r = await get_redis()
+            payload = {"status": status}
+            if result:
+                payload["result"] = result
+            await r.set(
+                self._get_rag_task_key(task_id),
+                orjson.dumps(payload).decode("utf-8"),
+                ex=86400,
+            )
+            return True
+        except Exception as e:
+            logger.error("设置RAG任务状态失败", task_id=task_id, error=str(e))
+            return False
+
+    async def get_rag_task_status(self, task_id: str) -> dict | None:
+        try:
+            r = await get_redis()
+            data = await r.get(self._get_rag_task_key(task_id))
+            if data:
+                raw = data if isinstance(data, str) else data.decode()
+                return orjson.loads(raw)
+            return None
+        except Exception as e:
+            logger.warning("获取RAG任务状态失败", task_id=task_id, error=str(e))
+            return None
+
 
 _redis_service: Optional[RedisService] = None
 

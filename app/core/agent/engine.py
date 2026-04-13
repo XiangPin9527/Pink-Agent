@@ -18,12 +18,16 @@ from app.core.memory.mq import (
     QUEUE_CHECKPOINT_WRITES,
     QUEUE_LONGTERM,
     QUEUE_SHORTMEM_COMPRESS,
+    QUEUE_RAG_INGEST_REPO,
+    QUEUE_RAG_INGEST_FILES,
 )
 from app.core.memory.mq.handlers import (
     handle_checkpoint_persist,
     handle_checkpoint_writes,
     handle_longterm_extract,
     handle_shortmem_compress,
+    handle_rag_ingest_repo,
+    handle_rag_ingest_files,
 )
 from app.core.llm.service import get_llm_service
 from app.core.orchestrator.graph import build_orchestrator_graph
@@ -90,6 +94,8 @@ async def create_orchestrator_engine():
         lambda body: handle_longterm_extract(longterm_extractor, body),
     )
     mq_service.register_handler(QUEUE_SHORTMEM_COMPRESS, handle_shortmem_compress)
+    mq_service.register_handler(QUEUE_RAG_INGEST_REPO, handle_rag_ingest_repo)
+    mq_service.register_handler(QUEUE_RAG_INGEST_FILES, handle_rag_ingest_files)
 
     await mq_service.start_workers()
 

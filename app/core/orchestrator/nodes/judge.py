@@ -3,36 +3,24 @@ Judge 节点
 
 评估节点：评估执行结果是否通过
 """
-import json
-import re
+from pydantic import BaseModel, Field
 
 from app.core.orchestrator.state import OrchestratorState
 from app.core.orchestrator.schemas import JudgeResult, StreamEvent
-from app.core.orchestrator.prompts import JUDGE_SYSTEM_PROMPT, JUDGE_USER_PROMPT
+from app.core.orchestrator.prompts import JUDGE_USER_PROMPT
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-def _parse_judge_response(content: str) -> JudgeResult:
-    json_match = re.search(r"\{[\s\S]*\}", content)
-    if json_match:
-        try:
-            parsed = json.loads(json_match.group())
-            return JudgeResult(
-                passed=parsed.get("passed", False),
-                reasons=parsed.get("reasons", []),
-                failed_steps=parsed.get("failed_steps", []),
-            )
-        except json.JSONDecodeError:
-            pass
-
-    passed = "passed" in content.lower() and "false" not in content.lower()
-    return JudgeResult(passed=passed, reasons=[content], failed_steps=[])
+class JudgeOutput(BaseModel):
+    passed: bool = Field(description="执行结果是否通过")
+    reasons: list[str] = Field(description="通过或失败的原因列表")
+    failed_steps: list[int] = Field(default_factory=list, description="失败的步骤编号列表")
 
 
 async def judge(state: OrchestratorState) -> OrchestratorState:
-    from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+    from langchain_core.messages import HumanMessage, AIMessage
     from app.core.llm.service import get_llm_service
 
     session_id = state["session_id"]
@@ -72,24 +60,39 @@ async def judge(state: OrchestratorState) -> OrchestratorState:
 
     actual_results = "\n\n".join(execution_logs) if execution_logs else "No execution results"
 
-    user_prompt = JUDGE_USER_PROMPT.format(
-        goal=overall_goal,
-        strategy=plan.reasoning if plan else "",
-        actual_results=actual_results,
-    )
+    system_prompt = """你是一个质量评估专家。请评估执行结果是否达到了用户目标。
+
+评估标准：
+1. 完整性：是否完成了用户请求的所有部分？
+2. 准确性：结果是否符合用户意图？
+3. 质量：结果是否有错误或遗漏？
+
+请严格按照JSON格式输出，包含passed、reasons和failed_steps字段。"""
+
+    user_prompt = f"""执行目标：{overall_goal}
+执行策略：{plan.reasoning if plan else ""}
+
+实际执行结果：
+{actual_results}
+
+请评估是否通过："""
 
     llm = get_llm_service().get_model()
+    structured_llm = llm.with_structured_output(JudgeOutput)
 
     try:
-        response = await llm.ainvoke([
-            SystemMessage(content=JUDGE_SYSTEM_PROMPT),
-            HumanMessage(content=user_prompt),
+        response = await structured_llm.ainvoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ])
 
-        content = response.content
-        logger.info("Judge LLM 响应", session_id=session_id, content_len=len(content))
+        logger.info("Judge LLM 响应", session_id=session_id, response=response)
 
-        judge_result = _parse_judge_response(content)
+        judge_result = JudgeResult(
+            passed=response.passed,
+            reasons=response.reasons,
+            failed_steps=response.failed_steps,
+        )
 
     except Exception as e:
         logger.error("Judge 执行失败", session_id=session_id, error=str(e))

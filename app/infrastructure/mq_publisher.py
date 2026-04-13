@@ -14,6 +14,8 @@ class MQPublisher:
     ROUTING_CHECKPOINT_WRITES = "checkpoint.writes"
     ROUTING_LONGTERM_EXTRACT = "longterm.extract"
     ROUTING_SHORTMEM_COMPRESS = "shortmem.compress"
+    ROUTING_RAG_INGEST_REPO = "rag.ingest.repo"
+    ROUTING_RAG_INGEST_FILES = "rag.ingest.files"
 
     async def publish(self, routing_key: str, message: dict[str, Any]) -> bool:
         try:
@@ -103,6 +105,34 @@ class MQPublisher:
             if not ok:
                 return False
         return True
+
+    async def publish_rag_ingest_repo(
+        self,
+        task_id: str,
+        repo_url: str,
+        project_name: str,
+        branch: str = "main",
+        target_extensions: list[str] | None = None,
+    ) -> bool:
+        return await self.publish(self.ROUTING_RAG_INGEST_REPO, {
+            "task_id": task_id,
+            "repo_url": repo_url,
+            "project_name": project_name,
+            "branch": branch,
+            "target_extensions": target_extensions,
+        })
+
+    async def publish_rag_ingest_files(
+        self,
+        task_id: str,
+        project_name: str,
+        files: list[dict[str, str]],
+    ) -> bool:
+        return await self.publish(self.ROUTING_RAG_INGEST_FILES, {
+            "task_id": task_id,
+            "project_name": project_name,
+            "files": files,
+        })
 
 
 _mq_publisher: Optional[MQPublisher] = None

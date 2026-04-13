@@ -13,11 +13,15 @@ ROUTING_CHECKPOINT_PERSIST = "checkpoint.persist"
 ROUTING_CHECKPOINT_WRITES = "checkpoint.writes"
 ROUTING_LONGTERM = "longterm.extract"
 ROUTING_SHORTMEM_COMPRESS = "shortmem.compress"
+ROUTING_RAG_INGEST_REPO = "rag.ingest.repo"
+ROUTING_RAG_INGEST_FILES = "rag.ingest.files"
 
 QUEUE_CHECKPOINT_PERSIST = "q.checkpoint.persist"
 QUEUE_CHECKPOINT_WRITES = "q.checkpoint.writes"
 QUEUE_LONGTERM = "q.longterm.extract"
 QUEUE_SHORTMEM_COMPRESS = "q.shortmem.compress"
+QUEUE_RAG_INGEST_REPO = "q.rag.ingest.repo"
+QUEUE_RAG_INGEST_FILES = "q.rag.ingest.files"
 QUEUE_DLQ = "q.dlq"
 
 DLX_NAME = "agent-engine-dlx"
@@ -196,9 +200,13 @@ __all__ = [
     "ROUTING_CHECKPOINT_WRITES",
     "ROUTING_LONGTERM",
     "ROUTING_SHORTMEM_COMPRESS",
+    "ROUTING_RAG_INGEST_REPO",
+    "ROUTING_RAG_INGEST_FILES",
     "QUEUE_CHECKPOINT_PERSIST",
     "QUEUE_CHECKPOINT_WRITES",
     "QUEUE_LONGTERM",
     "QUEUE_SHORTMEM_COMPRESS",
+    "QUEUE_RAG_INGEST_REPO",
+    "QUEUE_RAG_INGEST_FILES",
     "QUEUE_DLQ",
 ]

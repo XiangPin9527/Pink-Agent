@@ -7,7 +7,7 @@ from app.api.schemas.chat_response import (
     ChatResponse,
     TraceMetricEvent,
 )
-from app.api.schemas.rag_request import RagIngestRequest, RagIngestResponse
+from app.api.schemas.rag_request import RepoIngestRequest, FileIngestRequest, RagIngestResponse, RagTaskStatusResponse, ProjectInfoResponse, ProjectStatusResponse, DeleteProjectResponse
 
 __all__ = [
     "ChatStreamRequest",
@@ -15,6 +15,11 @@ __all__ = [
     "ChatStreamEvent",
     "ChatResponse",
     "TraceMetricEvent",
-    "RagIngestRequest",
+    "RepoIngestRequest",
+    "FileIngestRequest",
     "RagIngestResponse",
+    "RagTaskStatusResponse",
+    "ProjectInfoResponse",
+    "ProjectStatusResponse",
+    "DeleteProjectResponse",
 ]

@@ -29,6 +29,14 @@ COMPLEX_PATTERNS: List[str] = [
     r".{200,}",
 ]
 
+CODE_AUDIT_PATTERNS: List[str] = [
+    r"(代码审计|code audit|安全审计|security audit)",
+    r"(漏洞检测|vulnerability|安全检查|security check)",
+    r"(审计报告|audit report)",
+    r"(代码审查|code review|安全审查)",
+    r"(代码安全|安全扫描|安全分析)",
+]
+
 
 def _match_patterns(message: str, patterns: List[str]) -> bool:
     for p in patterns:
@@ -48,6 +56,9 @@ async def router(state: OrchestratorState) -> OrchestratorState:
     if _match_patterns(message, SIMPLE_PATTERNS):
         complexity = "simple"
         logger.info("Router 模式匹配为 simple", session_id=session_id)
+    elif _match_patterns(message, CODE_AUDIT_PATTERNS):
+        complexity = "code_audit"
+        logger.info("Router 模式匹配为 code_audit", session_id=session_id)
     elif _match_patterns(message, COMPLEX_PATTERNS):
         complexity = "complex"
         logger.info("Router 模式匹配为 complex", session_id=session_id)
@@ -65,7 +76,12 @@ async def router(state: OrchestratorState) -> OrchestratorState:
         ])
 
         content = response.content.lower().strip()
-        complexity = "simple" if "simple" in content else "complex"
+        if "code_audit" in content or "code audit" in content:
+            complexity = "code_audit"
+        elif "simple" in content:
+            complexity = "simple"
+        else:
+            complexity = "complex"
         logger.info("Router LLM 分类结果", session_id=session_id, complexity=complexity)
 
     if complexity is None:

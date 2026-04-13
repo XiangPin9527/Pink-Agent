@@ -1,8 +1,3 @@
-"""
-Orchestrator 主图编排
-
-路由 + 简单/复杂双路径执行
-"""
 from typing import Literal
 
 from langgraph.graph import StateGraph, END
@@ -15,13 +10,16 @@ from app.core.orchestrator.nodes import (
     executor,
     judge,
     reporter,
+    code_retriever,
+    vulnerability_analyzer,
+    audit_reporter,
 )
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-def route_by_complexity(state: OrchestratorState) -> Literal["simple", "complex"]:
+def route_by_complexity(state: OrchestratorState) -> Literal["simple", "complex", "code_audit"]:
     return state["task_complexity"]
 
 
@@ -48,6 +46,9 @@ def build_orchestrator_graph() -> StateGraph:
     workflow.add_node("executor", executor)
     workflow.add_node("judge", judge)
     workflow.add_node("reporter", reporter)
+    workflow.add_node("code_retriever", code_retriever)
+    workflow.add_node("vulnerability_analyzer", vulnerability_analyzer)
+    workflow.add_node("audit_reporter", audit_reporter)
 
     workflow.set_entry_point("router")
 
@@ -57,6 +58,7 @@ def build_orchestrator_graph() -> StateGraph:
         {
             "simple": "simple_handler",
             "complex": "analyzer",
+            "code_audit": "code_retriever",
         }
     )
 
@@ -72,8 +74,12 @@ def build_orchestrator_graph() -> StateGraph:
         }
     )
 
+    workflow.add_edge("code_retriever", "vulnerability_analyzer")
+    workflow.add_edge("vulnerability_analyzer", "audit_reporter")
+
     workflow.add_edge("simple_handler", END)
     workflow.add_edge("reporter", END)
+    workflow.add_edge("audit_reporter", END)
 
     logger.info("OrchestratorGraph 构建完成")
 

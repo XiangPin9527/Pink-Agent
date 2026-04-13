@@ -11,7 +11,7 @@ import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from app.config.settings import get_settings
 from app.utils.logger import get_logger
@@ -21,14 +21,10 @@ logger = get_logger(__name__)
 
 
 class LLMService:
-    """
-    LLM 调用服务
-    
-    封装 LangChain ChatOpenAI，提供统一的调用接口
-    """
 
     def __init__(self):
         self._model_cache: Dict[str, ChatOpenAI] = {}
+        self._embeddings: Optional[OpenAIEmbeddings] = None
         self.settings = get_settings()
 
     def get_model(
@@ -70,6 +66,30 @@ class LLMService:
             )
 
         return self._model_cache[cache_key]
+
+    def get_embeddings(self) -> OpenAIEmbeddings:
+        if self._embeddings is None:
+            self._embeddings = OpenAIEmbeddings(
+                model=self.settings.openai_embedding_model,
+                api_key=self.settings.openai_api_key,
+                base_url=self.settings.openai_base_url,
+                dimensions=self.settings.openai_embedding_dims,
+                check_embedding_ctx_length=False,
+            )
+        return self._embeddings
+
+    async def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        embeddings = self.get_embeddings()
+        return await embeddings.aembed_documents(texts)
+
+    async def embed_query(self, text: str) -> List[float]:
+        embeddings = self.get_embeddings()
+        return await embeddings.aembed_query(text)
+
+    async def ainvoke(self, prompt: str, **kwargs) -> str:
+        model = self.get_model()
+        response = await model.ainvoke([HumanMessage(content=prompt)], **kwargs)
+        return response.content if hasattr(response, "content") else str(response)
 
 
 _llm_service: Optional[LLMService] = None

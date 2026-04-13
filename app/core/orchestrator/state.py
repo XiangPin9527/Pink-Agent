@@ -17,12 +17,18 @@ class OrchestratorState(TypedDict):
 
     task_complexity: str
     execution_plan: Optional[ExecutionPlan]
-    current_step_index: int  # 当前步骤索引
-    iteration_count: int  # 迭代次数
-    max_iterations: int  # 最大迭代次数
-    judge_result: Optional[JudgeResult]  # 判断结果
-    stream_buffer: List[str]  # 流式数据缓存
-    stream_event: Optional[StreamEvent]  # 流式事件
+    current_step_index: int
+    iteration_count: int
+    max_iterations: int
+    judge_result: Optional[JudgeResult]
+    stream_buffer: List[str]
+    stream_event: Optional[StreamEvent]
+
+    audit_files: List[dict]
+    audit_project_name: str
+    rag_context: str
+    retrieval_results: List[dict]
+    vulnerabilities: List[dict]
 
 
 __all__ = ["OrchestratorState"]

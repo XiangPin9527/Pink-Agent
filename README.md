@@ -23,17 +23,23 @@
 │  │         │                                                  │  │
 │  │    ┌────┴────┐                                             │  │
 │  │    │         │                                             │  │
-│  │    ▼         ▼                                             │  │
-│  │ simple    complex                                          │  │
-│  │ handler   ├─► Analyzer (规划)                               │  │
-│  │    │      ├─► Executor (执行) ─► Judge (评估)               │  │
-│  │    │      │       ▲         │                              │  │
-│  │    │      │       └─────────┘ (反思循环，最多3次)           │  │
-│  │    │      └─► Reporter (总结)                               │  │
-│  │    │                                                         │  │
-│  │    └──────────────────────────────────────────────────────  │  │
-│  │                共享状态 (messages / execution_plan 等)        │  │
-│  └─────────────────────────────────────────────────────────────┘  │
+│  │    ▼         ▼         ▼                                    │  │
+│  │ simple    complex   code_audit                              │  │
+│  │    │         │           │                                   │  │
+│  │    ▼         ▼           ▼                                   │  │
+│  │ Simple   Analyzer   CodeRetriever                           │  │
+│  │ Handler  │     │           │                                │  │
+│  │    │     ▼     ▼           ▼                                │  │
+│  │    │  Executor ──► Judge ◄── Analyzer (反思循环，最多3次)   │  │
+│  │    │     │         │      │                                │  │
+│  │    │     └─────────┴──────┘                                │  │
+│  │    │                   │                                    │  │
+│  │    └─────────┐         ▼                                    │  │
+│  │          Reporter   Vulnerability                            │  │
+│  │              │       Analyzer                                │  │
+│  │              └──────────┴────► AuditReporter                │  │
+│  │                                                           │  │
+│  └───────────────────────────────────────────────────────────┘  │
 │                                                                    │
 │  ┌──────────────┐  ┌──────────────────┐  ┌────────────────────┐  │
 │  │ 记忆系统     │  │ 异步消息队列     │  │ 工具系统 (MCP)   │  │
@@ -54,14 +60,15 @@
 - **自动分类**: Router 节点根据消息特征自动判断任务复杂度
 - **简单任务**: 单轮问答、翻译、简单查询 → 直接由 simple_handler 处理
 - **复杂任务**: 多步骤执行、多工具协同 → 由 Analyzer → Executor → Judge → Reporter 链路处理
+- **代码审计任务**: 代码安全审计、漏洞检测 → CodeRetriever → VulnerabilityAnalyzer → AuditReporter
 - **反思循环**: Judge 评估不通过时自动返回 Analyzer 重新规划（最多 3 次迭代）
 
 ### 多级记忆系统
 - **短期记忆（动态压缩）**:
-  - 消息 < 10 条：全量携带
-  - 消息 >= 10 条：MQ 异步压缩，生成摘要
+  - 消息 < 30 条：全量携带
+  - 消息 >= 30 条：MQ 异步压缩，生成摘要
   - 后续携带：`[摘要]` + [最新消息]
-  - 保留策略：始终保留最新 5 条不压缩
+  - 保留策略：始终保留最新 20 条不压缩
 - **长期记忆**: PostgreSQL + pgvector 存储用户画像、偏好、项目背景
 - **异步提取**: RabbitMQ 驱动，每 10 条用户消息触发一次长期记忆提取
 
@@ -73,7 +80,7 @@
 - **短期记忆压缩**: 消息达到阈值时触发，MQ Worker 生成摘要并更新 Redis
 - **长期记忆提取**: LLM 从对话中提取 profile / preference / project / relation
 - **Checkpoint 持久化**: 异步写入 PostgreSQL
-- **Checkpoint Writes**: 追踪节点写入操作
+- **RAG 仓库/文件入库**: 异步处理 Git 仓库克隆和代码块入库
 
 ### 流式输出
 - **SSE 实时推送**: 每个 token 实时输出
@@ -155,6 +162,7 @@ python scripts/init_db.py
 - `checkpoints` / `checkpoint_blobs` / `checkpoint_writes` 表（对话状态持久化）
 - `store` 表（长期记忆原始数据）
 - `store_vectors` 表（长期记忆向量索引，1024 维）
+- `code_chunks` / `projects` 表（RAG 代码块存储）
 - 相关索引
 
 ### 5. 启动服务
@@ -187,12 +195,15 @@ docker-compose up -d
 
 | 节点 | 职责 | 输入 | 输出 |
 |------|------|------|------|
-| **Router** | 判断任务复杂度 | 用户消息 | task_complexity (simple/complex) |
+| **Router** | 判断任务复杂度 | 用户消息 | task_complexity (simple/complex/code_audit) |
 | **Simple Handler** | 处理简单任务 | 用户消息 + 记忆 | AI 回复 |
 | **Analyzer** | 分析规划复杂任务 | 用户消息 + 工具列表 | ExecutionPlan (分步计划) |
 | **Executor** | 执行每个步骤 | 规划步骤 + 工具 | 步骤执行结果 |
 | **Judge** | 评估执行结果 | 执行结果 | JudgeResult (passed/reasons) |
 | **Reporter** | 生成总结报告 | 完整执行过程 | 面向用户的总结 |
+| **CodeRetriever** | 代码检索 | 审计文件列表 | RAG 上下文 |
+| **VulnerabilityAnalyzer** | 漏洞分析 | 代码 + RAG 上下文 | 漏洞列表 |
+| **AuditReporter** | 生成审计报告 | 漏洞列表 | 安全审计报告 |
 
 ### 路由流程
 
@@ -204,47 +215,44 @@ docker-compose up -d
 │              Router 节点                  │
 │  1. 模式匹配 (正则)                       │
 │     - simple: 问候、简单问答、翻译等       │
-│     - complex: 长文本、多步骤、代码生成等  │
+│     - complex: 长文本、多步骤、代码生成等    │
+│     - code_audit: 代码审计、安全检查等      │
 │  2. LLM 兜底 (模式不匹配时)               │
 └─────────────────┬───────────────────────┘
                   │
-        ┌─────────┴─────────┐
-        │                   │
-        ▼                   ▼
-    simple              complex
-        │                   │
-        ▼                   ▼
-┌───────────────┐   ┌───────────────────┐
-│ SimpleHandler │   │     Analyzer      │
-│   (ReAct)     │   │  (制定执行计划)    │
-└───────┬───────┘   └─────────┬─────────┘
-        │                     │
-        │                     ▼
-        │              ┌───────────┐
-        │              │  Executor │
-        │              │ (执行步骤) │
-        │              └─────┬─────┘
-        │                    │
-        │                    ▼
-        │              ┌───────────┐
-        │              │   Judge   │
-        │              │  (评估)   │
-        │              └─────┬─────┘
-        │                    │
-        │         ┌──────────┴──────────┐
-        │         │                      │
-        │    未通过 ✓                     通过 ✗
-        │         │                      │
-        │         ▼                      ▼
-        │   ┌──────────┐          ┌──────────┐
-        │   │ Analyzer │          │ Reporter │
-        │   │ (重新规划)│          │ (总结报告)│
-        │   └──────────┘          └──────────┘
-        │         │                      │
-        └─────────┴──────────────────────┘
-                      │
-                      ▼
-                     END
+        ┌─────────┼─────────┐
+        │         │         │
+        ▼         ▼         ▼
+    simple    complex   code_audit
+        │         │         │
+        ▼         ▼         ▼
+┌───────────┐ ┌─────────┐ ┌──────────────┐
+│Simple     │ │ Analyzer│ │ CodeRetriever│
+│Handler    │ └────┬────┘ └──────┬───────┘
+└─────┬─────┘      │             │
+      │            ▼             ▼
+      │     ┌───────────┐ ┌──────────────────┐
+      │     │  Executor │ │Vulnerability     │
+      │     └─────┬─────┘ │Analyzer          │
+      │           │       └────────┬─────────┘
+      │           ▼                ▼
+      │     ┌───────────┐ ┌──────────────┐
+      │     │   Judge   │ │AuditReporter │
+      │     └─────┬─────┘ └──────┬───────┘
+      │           │              │
+      │    ┌──────┴──────┐       │
+      │    │             │       │
+      │ 未通过 ✓      通过 ✗       │
+      │    │             │       │
+      │    ▼             ▼       ▼
+      │ ┌────────┐  ┌────────┐  END
+      │ │Analyzer │  │Reporter│
+      │ └────────┘  └────────┘
+      │    (重试≤3)    │
+      └──────┬─────────┘
+             │
+             ▼
+            END
 ```
 
 ### 反思循环
@@ -263,9 +271,9 @@ docker-compose up -d
 
 | 条件 | 行为 |
 |------|------|
-| 消息 < 10 条 | 全量携带，不压缩 |
-| 消息 >= 10 条 | 触发 MQ 异步压缩 |
-| 压缩时 | 保留最新 5 条，压缩之前的消息 |
+| 消息 < 30 条 | 全量携带，不压缩 |
+| 消息 >= 30 条 | 触发 MQ 异步压缩 |
+| 压缩时 | 保留最新 20 条，压缩之前的消息 |
 
 **工作流程**：
 
@@ -278,7 +286,7 @@ docker-compose up -d
     │
     ├─► 执行节点
     │
-    └─► 检查 len(messages) >= 10
+    └─► 检查 len(messages) >= 30
             │
             ├─ 是 → 发送 MQ 消息（含序列化消息内容）
             │
@@ -286,7 +294,7 @@ docker-compose up -d
 
 MQ Worker:
     ├─► 收到消息
-    ├─► 提取待压缩消息（messages[:-5]）
+    ├─► 提取待压缩消息（messages[:-20]）
     ├─► 调用 LLM 生成摘要
     ├─► 新摘要 = merge(旧摘要, 新压缩内容)
     └─► 更新 Redis {session_id}_summary
@@ -322,14 +330,18 @@ MQ Worker:
   │    ├─ 读取短期记忆摘要 (Redis)
   │    ├─ 提取近期消息 (state["messages"])
   │    ├─ ReAct Agent 执行
-  │    └─ 检查触发压缩 (>= 10条 → MQ)
+  │    └─ 检查触发压缩 (>= 30条 → MQ)
   │
-  └─► Analyzer → Executor → Judge → Reporter
-       │         │         │        │
-       │         │         │        ├─ 加载短期记忆摘要 + 长期记忆
-       │         │         ├─ 加载短期记忆摘要 + 长期记忆
-       │         └─ 加载短期记忆摘要 + 长期记忆
-       └─ 加载短期记忆摘要 + 长期记忆
+  ├─► Analyzer → Executor → Judge → Reporter
+  │    │         │         │        │
+  │    │         │         │        ├─ 加载短期记忆摘要 + 长期记忆
+  │    │         │         ├─ 加载短期记忆摘要 + 长期记忆
+  │    │         └─ 加载短期记忆摘要 + 长期记忆
+  │    └─ 加载短期记忆摘要 + 长期记忆
+  │
+  └─► CodeRetriever → VulnerabilityAnalyzer → AuditReporter
+       │                    │
+       └─ RAG 上下文 ────────┘
 
 所有节点执行后:
   ├─ Checkpointer 自动持久化 (Redis + PostgreSQL)
@@ -346,14 +358,35 @@ MQ Worker:
 |------|------|------|
 | `/v1/agent/chat/stream` | POST | 流式对话 (SSE) |
 | `/v1/agent/chat` | POST | 非流式对话 |
+| `/v1/agent/audit/stream` | POST | 代码审计流式接口 (SSE) |
+| `/v1/agent/audit` | POST | 代码审计非流式接口 |
 
-**请求体：**
+**对话请求体：**
 
 ```json
 {
   "user_id": "123",
   "session_id": "123",
   "message": "帮我分析一下后端开发现状"
+}
+```
+
+**审计请求体：**
+
+```json
+{
+  "user_id": "123",
+  "session_id": "123",
+  "project_name": "my-project",
+  "files": [
+    {
+      "file_path": "src/main.py",
+      "content": "print('hello')",
+      "language": "python",
+      "diff": null
+    }
+  ],
+  "audit_type": "security"
 }
 ```
 
@@ -379,12 +412,48 @@ data: {"type": "done"}
 curl -N -X POST http://localhost:8000/v1/agent/chat/stream -H "Content-Type: application/json" -d "{\"user_id\":\"123\",\"session_id\":\"123\",\"message\":\"你好\"}"
 ```
 
+### RAG 接口
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/v1/rag/ingest/repo` | POST | Git 仓库入库 |
+| `/v1/rag/ingest/files` | POST | 文件批量入库 |
+| `/v1/rag/tasks/{task_id}` | GET | 查询任务状态 |
+| `/v1/rag/projects` | GET | 列出所有项目 |
+| `/v1/rag/projects/{project_name}` | GET | 获取项目状态 |
+| `/v1/rag/projects/{project_name}` | DELETE | 删除项目 |
+
+**仓库入库请求体：**
+
+```json
+{
+  "repo_url": "https://github.com/user/repo.git",
+  "branch": "main",
+  "project_name": "my-project",
+  "target_extensions": [".py", ".java", ".js"]
+}
+```
+
+**文件入库请求体：**
+
+```json
+{
+  "project_name": "my-project",
+  "files": [
+    {
+      "file_path": "src/main.py",
+      "content": "print('hello')",
+      "language": "python"
+    }
+  ]
+}
+```
+
 ### 其他接口
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/v1/health` | GET | 健康检查 |
-| `/v1/rag/ingest` | POST | 文档嵌入 |
 
 ## 项目结构
 
@@ -393,33 +462,45 @@ ai-agent-engine/
 ├── app/
 │   ├── main.py                          # FastAPI 应用入口
 │   ├── config/
-│   │   └── settings.py                  # 全局配置 (Pydantic Settings)
+│   │   ├── __init__.py
+│   │   ├── settings.py                  # 全局配置 (Pydantic Settings)
+│   │   └── mcp.yaml                     # MCP 服务器配置
 │   ├── api/
 │   │   ├── router.py                    # 路由注册
 │   │   ├── deps.py                      # 依赖注入 (OrchestratorEngine)
-│   │   ├── v1/
-│   │   │   ├── agent.py                 # 对话接口 (流式/非流式)
-│   │   │   ├── rag.py                  # RAG 接口
-│   │   │   └── health.py                # 健康检查
-│   │   └── schemas/
-│   │       ├── chat_request.py          # 请求模型
-│   │       └── chat_response.py         # 响应模型
+│   │   ├── schemas/
+│   │   │   ├── __init__.py
+│   │   │   ├── chat_request.py          # 对话请求模型
+│   │   │   ├── chat_response.py         # 对话响应模型
+│   │   │   ├── audit_request.py         # 审计请求模型
+│   │   │   └── rag_request.py           # RAG 请求模型
+│   │   └── v1/
+│   │       ├── __init__.py
+│   │       ├── agent.py                 # 对话/审计接口
+│   │       ├── rag.py                  # RAG 接口
+│   │       └── health.py                # 健康检查
 │   ├── core/
 │   │   ├── agent/
+│   │   │   ├── __init__.py
 │   │   │   └── engine.py                # OrchestratorEngine 工厂函数
 │   │   ├── llm/
+│   │   │   ├── __init__.py
 │   │   │   └── service.py               # LLM 调用服务 (DashScope)
 │   │   ├── memory/
 │   │   │   ├── loader.py                # 长期记忆加载器
 │   │   │   ├── shortmem.py              # 短期记忆压缩 (Redis)
 │   │   │   ├── checkpoint/
+│   │   │   │   ├── __init__.py
 │   │   │   │   └── saver.py             # Checkpoint 两级缓存 (Redis + PG)
 │   │   │   ├── longterm/
+│   │   │   │   ├── __init__.py
 │   │   │   │   └── extractor.py         # 长期记忆提取器
 │   │   │   └── mq/
+│   │   │       ├── __init__.py          # MQ 路由常量
 │   │   │       ├── service.py           # RabbitMQ 消息队列服务
 │   │   │       └── handlers.py          # MQ 消息处理器
 │   │   ├── orchestrator/                # 多级 Agent 编排模块
+│   │   │   ├── __init__.py
 │   │   │   ├── graph.py                # 编排图定义 (Router + 条件路由)
 │   │   │   ├── state.py                # OrchestratorState 定义
 │   │   │   ├── schemas.py              # ExecutionPlan / JudgeResult 等
@@ -428,15 +509,29 @@ ai-agent-engine/
 │   │   │   ├── simple_agent.py         # ReAct Agent 构建函数
 │   │   │   ├── utils.py                # 编排器公共工具函数
 │   │   │   └── nodes/
+│   │   │       ├── __init__.py
 │   │   │       ├── router.py           # 复杂度路由节点
 │   │   │       ├── simple_handler.py   # 简单任务处理器
 │   │   │       ├── analyzer.py         # 复杂任务分析规划节点
 │   │   │       ├── executor.py         # 任务执行节点
 │   │   │       ├── judge.py            # 执行结果评估节点
-│   │   │       └── reporter.py         # 总结报告节点
+│   │   │       ├── reporter.py         # 总结报告节点
+│   │   │       ├── code_retriever.py   # 代码检索节点
+│   │   │       ├── vulnerability_analyzer.py  # 漏洞分析节点
+│   │   │       └── audit_reporter.py  # 审计报告节点
 │   │   └── rag/
-│   │       └── engine.py               # RAG 引擎
+│   │       ├── __init__.py
+│   │       ├── engine.py               # RAG 引擎
+│   │       ├── schemas.py              # RAG 数据结构
+│   │       ├── chunker.py              # 代码分块器
+│   │       ├── embedder.py             # Embedding 服务
+│   │       ├── retriever.py            # 检索器
+│   │       ├── retrieval_store.py      # 检索存储
+│   │       ├── reranker.py             # 重排序
+│   │       ├── query_rewriter.py       # 查询改写
+│   │       └── git_loader.py           # Git 仓库加载器
 │   ├── infrastructure/
+│   │   ├── __init__.py
 │   │   ├── redis_client.py             # Redis 客户端 (底层连接)
 │   │   ├── db_client.py                # PostgreSQL 客户端 (底层连接)
 │   │   ├── mq_client.py                # RabbitMQ 客户端 (底层连接)
@@ -445,15 +540,13 @@ ai-agent-engine/
 │   │   └── mq_publisher.py             # RabbitMQ 发布服务 (异步任务发布)
 │   ├── tools/                          # 工具层 (MCP)
 │   │   ├── __init__.py                  # 工具层导出
-│   │   ├── base.py                     # 工具基类
-│   │   ├── registry.py                 # 工具注册表
-│   │   └── mcp/
-│   │       ├── __init__.py             # MCP 模块导出
-│   │       ├── adapter.py              # MCP 工具适配器
-│   │       ├── client.py               # MCP 客户端 (占位符)
-│   │       ├── config.py               # MCP 配置加载器
-│   │       └── manager.py              # MCP 服务管理器
+│   │   ├── mcp/
+│   │   │   ├── __init__.py             # MCP 模块导出
+│   │   │   ├── config.py               # MCP 配置加载器
+│   │   │   └── manager.py              # MCP 服务管理器
+│   │   └── (其他工具模块)
 │   └── utils/
+│       ├── __init__.py
 │       ├── logger.py                   # 结构化日志 (structlog)
 │       ├── trace.py                    # 链路追踪上下文
 │       ├── retry.py                    # 重试工具
@@ -580,7 +673,7 @@ selected_tools = await mcp_manager.get_tools(tags=["lark", "github"])
                               │
 ┌─────────────────────────────▼───────────────────────────────┐
 │                    客户端层 (Clients)                         │
-│  redis_client.py / db_client.py / mq_client.py               │
+│  redis_client.py / db_client.py / mq_client.py              │
 │  ✅ 仅负责连接管理和基础操作，被服务层内部调用                 │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -589,9 +682,9 @@ selected_tools = await mcp_manager.get_tools(tags=["lark", "github"])
 
 | 服务层 | 职责 |
 |--------|------|
-| **RedisService** | 短期记忆（摘要/计数器）、长期记忆位置、Checkpoint读写 |
+| **RedisService** | 短期记忆（摘要/计数器）、长期记忆位置、Checkpoint读写、RAG任务状态 |
 | **DbService** | Checkpoint 持久化、查询 |
-| **MQPublisher** | 短期记忆压缩任务、长期记忆提取任务、Checkpoint持久化任务 |
+| **MQPublisher** | 短期记忆压缩任务、长期记忆提取任务、Checkpoint持久化任务、RAG入库任务 |
 
 ### 重构收益
 
@@ -602,6 +695,17 @@ selected_tools = await mcp_manager.get_tools(tags=["lark", "github"])
 | **可替换性** | 更换 Redis/DB 只需修改 service 实现 |
 | **可维护性** | 基础设施逻辑集中管理 |
 | **可读性** | 业务代码清晰专注业务逻辑 |
+
+## 消息队列任务类型
+
+| 队列 | 路由 Key | 功能 |
+|------|---------|------|
+| `q.shortmem.compress` | `shortmem.compress` | 短期记忆压缩 |
+| `q.longterm.extract` | `longterm.extract` | 长期记忆提取 |
+| `q.checkpoint.persist` | `checkpoint.persist` | Checkpoint 持久化 |
+| `q.checkpoint.writes` | `checkpoint.writes` | Checkpoint Writes 持久化 |
+| `q.rag.ingest.repo` | `rag.ingest.repo` | Git 仓库入库 |
+| `q.rag.ingest.files` | `rag.ingest.files` | 文件批量入库 |
 
 ## 开发指南
 

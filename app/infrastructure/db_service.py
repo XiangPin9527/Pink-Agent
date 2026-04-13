@@ -1,4 +1,5 @@
 from typing import Any, Optional
+
 from app.infrastructure.db_client import get_db_pool
 from app.utils.logger import get_logger
 

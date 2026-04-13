@@ -7,10 +7,14 @@ from app.core.memory.mq.service import (
     ROUTING_CHECKPOINT_WRITES,
     ROUTING_LONGTERM,
     ROUTING_SHORTMEM_COMPRESS,
+    ROUTING_RAG_INGEST_REPO,
+    ROUTING_RAG_INGEST_FILES,
     QUEUE_CHECKPOINT_PERSIST,
     QUEUE_CHECKPOINT_WRITES,
     QUEUE_LONGTERM,
     QUEUE_SHORTMEM_COMPRESS,
+    QUEUE_RAG_INGEST_REPO,
+    QUEUE_RAG_INGEST_FILES,
     QUEUE_DLQ,
 )
 from app.core.memory.mq.handlers import (
@@ -18,6 +22,8 @@ from app.core.memory.mq.handlers import (
     handle_checkpoint_writes,
     handle_longterm_extract,
     handle_shortmem_compress,
+    handle_rag_ingest_repo,
+    handle_rag_ingest_files,
 )
 
 __all__ = [
@@ -29,13 +35,19 @@ __all__ = [
     "ROUTING_CHECKPOINT_WRITES",
     "ROUTING_LONGTERM",
     "ROUTING_SHORTMEM_COMPRESS",
+    "ROUTING_RAG_INGEST_REPO",
+    "ROUTING_RAG_INGEST_FILES",
     "QUEUE_CHECKPOINT_PERSIST",
     "QUEUE_CHECKPOINT_WRITES",
     "QUEUE_LONGTERM",
     "QUEUE_SHORTMEM_COMPRESS",
+    "QUEUE_RAG_INGEST_REPO",
+    "QUEUE_RAG_INGEST_FILES",
     "QUEUE_DLQ",
     "handle_checkpoint_persist",
     "handle_checkpoint_writes",
     "handle_longterm_extract",
     "handle_shortmem_compress",
+    "handle_rag_ingest_repo",
+    "handle_rag_ingest_files",
 ]
