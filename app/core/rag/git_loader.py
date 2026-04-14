@@ -1,8 +1,10 @@
 import os
 import asyncio
-import tempfile
 import fnmatch
+import uuid
 from typing import Optional
+
+import git
 
 from app.core.rag.schemas import FileInfo, RepoInfo, IGNORE_PATTERNS, DEFAULT_TARGET_EXTENSIONS
 from app.utils.logger import get_logger
@@ -19,23 +21,33 @@ class GitRepoLoader:
         shallow: bool = True,
         target_extensions: Optional[list[str]] = None,
     ) -> RepoInfo:
-        temp_dir = tempfile.mkdtemp(prefix="rag_repo_")
-        cmd = ["git", "clone", "--branch", branch]
-        if shallow:
-            cmd.extend(["--depth", "1"])
-        cmd.extend([repo_url, temp_dir])
+        logger.info("开始克隆仓库", repo_url=repo_url, branch=branch)
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
+        sub_dir = f"rag_repo_{uuid.uuid4().hex[:8]}"
+        temp_dir = os.path.join(r"E:\Python\Temp", sub_dir)
+        os.makedirs(temp_dir, exist_ok=True)
 
-        if process.returncode != 0:
-            error_msg = stderr.decode("utf-8", errors="replace").strip()
-            logger.error("Git 克隆失败", repo_url=repo_url, error=error_msg)
-            raise RuntimeError(f"Git clone failed: {error_msg}")
+        def _do_clone():
+            return git.Repo.clone_from(
+                url=repo_url,
+                to_path=temp_dir,
+                branch=branch,
+                depth=1 if shallow else None,
+                env={"GIT_TERMINAL_PROMPT": "0"},
+                allow_unsafe_protocols=True,
+                allow_unsafe_options=True,
+            )
+
+        try:
+            repo = await asyncio.to_thread(_do_clone)
+            await asyncio.to_thread(repo.close)
+            del repo
+        except git.GitCommandError as e:
+            logger.error("Git 克隆失败", repo_url=repo_url, error=str(e))
+            raise RuntimeError(f"Git clone failed: {e.stderr}") from e
+        except Exception as e:
+            logger.error("Git 克隆失败", repo_url=repo_url, error=str(e))
+            raise RuntimeError(f"Git clone failed: {e}") from e
 
         logger.info("Git 仓库克隆完成", repo_url=repo_url, local_path=temp_dir)
 
@@ -54,9 +66,7 @@ class GitRepoLoader:
         target_extensions: Optional[list[str]] = None,
         ignore_patterns: Optional[list[str]] = None,
     ) -> list[FileInfo]:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
+        return await asyncio.to_thread(
             self.scan_files,
             repo_path,
             target_extensions,
@@ -137,9 +147,7 @@ class GitRepoLoader:
     async def cleanup(local_path: str):
         import shutil
         try:
-            await asyncio.get_event_loop().run_in_executor(
-                None, shutil.rmtree, local_path
-            )
+            await asyncio.to_thread(shutil.rmtree, local_path)
             logger.debug("临时目录已清理", local_path=local_path)
         except Exception as e:
             logger.warning("清理临时目录失败", local_path=local_path, error=str(e))

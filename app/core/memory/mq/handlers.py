@@ -48,14 +48,43 @@ async def handle_checkpoint_writes(message: dict[str, Any]) -> None:
     logger.debug("Checkpoint write 持久化完成", thread_id=thread_id, checkpoint_id=checkpoint_id)
 
 
-async def handle_longterm_extract(
-    longterm_extractor: Any, message: dict[str, Any]
-) -> None:
+async def handle_longterm_extract(message: dict[str, Any]) -> None:
     user_id = message.get("user_id", "")
     thread_id = message.get("thread_id", "")
     msgs = message.get("messages", [])
     total_msg_count = message.get("total_msg_count", 0)
     if user_id and msgs:
+        from app.core.memory.longterm.extractor import LongTermExtractor
+        from app.core.llm.service import get_llm_service
+        from langgraph.store.postgres.aio import AsyncPostgresStore
+        from psycopg_pool import AsyncConnectionPool
+        from app.config.settings import get_settings
+
+        settings = get_settings()
+        llm = get_llm_service().get_model()
+
+        async def _configure_conn(conn):
+            await conn.set_autocommit(True)
+
+        pg_pool = AsyncConnectionPool(
+            conninfo=settings.database_url.replace("+asyncpg", ""),
+            min_size=2,
+            max_size=10,
+            configure=_configure_conn,
+        )
+        await pg_pool.open()
+
+        store = AsyncPostgresStore(
+            conn=pg_pool,
+            index={
+                "dims": settings.openai_embedding_dims,
+                "embed": llm,
+                "fields": ["content", "category"],
+            },
+        )
+        await store.setup()
+
+        longterm_extractor = LongTermExtractor(llm=llm, store=store)
         await longterm_extractor.extract_and_store(user_id, thread_id, msgs)
         redis_service = get_redis_service()
         await redis_service.set_longterm_extract_position(thread_id, total_msg_count)
@@ -190,6 +219,7 @@ async def handle_rag_ingest_repo(message: dict[str, Any]) -> None:
 
         from app.core.rag.engine import get_rag_engine
         rag_engine = get_rag_engine()
+        logger.info("MQ接收到嵌入向量库消息，开始执行处理")
         repo_info = await rag_engine.ingest_repo(
             repo_url=repo_url,
             project_name=project_name,

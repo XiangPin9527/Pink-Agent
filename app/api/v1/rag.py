@@ -32,6 +32,7 @@ async def ingest_repo(request: RepoIngestRequest):
             branch=request.branch,
             target_extensions=request.target_extensions,
         )
+        logger.info("提交仓库入库任务成功", task_id=task_id)
 
         if not ok:
             raise HTTPException(status_code=500, detail="消息发布失败")

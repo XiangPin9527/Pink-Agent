@@ -114,6 +114,7 @@ class MQPublisher:
         branch: str = "main",
         target_extensions: list[str] | None = None,
     ) -> bool:
+        logger.info("mq_publisher开始发布MQ任务")
         return await self.publish(self.ROUTING_RAG_INGEST_REPO, {
             "task_id": task_id,
             "repo_url": repo_url,

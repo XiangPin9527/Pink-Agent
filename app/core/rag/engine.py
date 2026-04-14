@@ -23,6 +23,7 @@ class RAGEngine:
         branch: str = "main",
         target_extensions: list[str] | None = None,
     ) -> RepoInfo:
+        logger.info("开始处理仓库", repo_url=repo_url, project_name=project_name)
         loader = get_git_repo_loader()
         repo_info = await loader.clone_repo(
             repo_url=repo_url,
@@ -67,6 +68,7 @@ class RAGEngine:
         files: list[FileInfo],
         project_name: str,
     ) -> int:
+        logger.info("开始处理文件", project_name=project_name, file_count=len(files))
         chunker = get_code_chunker()
         store = get_retrieval_store()
         await store.ensure_store()

@@ -47,6 +47,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("RabbitMQ 连接初始化失败，部分功能不可用", error=str(e))
 
+    try:
+        await _start_mq_workers()
+        logger.info("MQ Workers 启动完成")
+    except Exception as e:
+        logger.warning("MQ Workers 启动失败，异步任务将不可用", error=str(e))
+
     yield
 
     logger.info("应用关闭中...")
@@ -54,7 +60,13 @@ async def lifespan(app: FastAPI):
     from app.infrastructure.redis_client import close_redis
     from app.infrastructure.db_client import close_db_pool
     from app.infrastructure.mq_client import close_mq
+    from app.core.memory.mq.service import close_mq_service
     from app.api.deps import _agent_engine_with_memory
+
+    try:
+        await close_mq_service()
+    except Exception as e:
+        logger.warning("关闭 MQ Service 失败", error=str(e))
 
     if _agent_engine_with_memory is not None:
         await _agent_engine_with_memory.aclose()
@@ -64,6 +76,37 @@ async def lifespan(app: FastAPI):
     await close_db_pool()
 
     logger.info("应用已关闭")
+
+
+async def _start_mq_workers():
+    from app.core.memory.mq.service import get_mq_service_instance
+    from app.core.memory.mq.handlers import (
+        handle_checkpoint_persist,
+        handle_checkpoint_writes,
+        handle_longterm_extract,
+        handle_shortmem_compress,
+        handle_rag_ingest_repo,
+        handle_rag_ingest_files,
+    )
+    from app.core.memory.mq import (
+        QUEUE_CHECKPOINT_PERSIST,
+        QUEUE_CHECKPOINT_WRITES,
+        QUEUE_LONGTERM,
+        QUEUE_SHORTMEM_COMPRESS,
+        QUEUE_RAG_INGEST_REPO,
+        QUEUE_RAG_INGEST_FILES,
+    )
+
+    mq_service = await get_mq_service_instance()
+
+    mq_service.register_handler(QUEUE_CHECKPOINT_PERSIST, handle_checkpoint_persist)
+    mq_service.register_handler(QUEUE_CHECKPOINT_WRITES, handle_checkpoint_writes)
+    mq_service.register_handler(QUEUE_LONGTERM, handle_longterm_extract)
+    mq_service.register_handler(QUEUE_SHORTMEM_COMPRESS, handle_shortmem_compress)
+    mq_service.register_handler(QUEUE_RAG_INGEST_REPO, handle_rag_ingest_repo)
+    mq_service.register_handler(QUEUE_RAG_INGEST_FILES, handle_rag_ingest_files)
+
+    await mq_service.start_workers()
 
 
 def create_app() -> FastAPI:

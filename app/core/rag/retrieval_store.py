@@ -19,7 +19,15 @@ class RetrievalStore:
 
     def _get_connection_string(self) -> str:
         settings = get_settings()
-        return settings.database_url.replace("+asyncpg", "")
+        url = settings.database_url
+        if "+asyncpg" in url:
+            return url
+        elif "+psycopg" in url:
+            return url
+        elif "+psycopg2" in url:
+            return url.replace("+psycopg2", "+asyncpg")
+        else:
+            return url.replace("postgresql://", "postgresql+asyncpg://")
 
     def _get_embeddings(self) -> OpenAIEmbeddings:
         settings = get_settings()
@@ -42,7 +50,6 @@ class RetrievalStore:
         await self._engine.ainit_vectorstore_table(
             table_name=self.TABLE_NAME,
             vector_size=self.VECTOR_SIZE,
-            overwrite=False,
         )
 
         self._store = await PGVectorStore.create(

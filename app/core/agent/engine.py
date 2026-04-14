@@ -12,23 +12,7 @@ from app.config.settings import get_settings
 from app.core.memory.checkpoint.saver import RedisPostgresSaver
 from app.core.memory.loader import MemoryLoader
 from app.core.memory.longterm.extractor import LongTermExtractor
-from app.core.memory.mq import (
-    get_mq_service_instance,
-    QUEUE_CHECKPOINT_PERSIST,
-    QUEUE_CHECKPOINT_WRITES,
-    QUEUE_LONGTERM,
-    QUEUE_SHORTMEM_COMPRESS,
-    QUEUE_RAG_INGEST_REPO,
-    QUEUE_RAG_INGEST_FILES,
-)
-from app.core.memory.mq.handlers import (
-    handle_checkpoint_persist,
-    handle_checkpoint_writes,
-    handle_longterm_extract,
-    handle_shortmem_compress,
-    handle_rag_ingest_repo,
-    handle_rag_ingest_files,
-)
+from app.core.memory.mq import get_mq_service_instance
 from app.core.llm.service import get_llm_service
 from app.core.orchestrator.graph import build_orchestrator_graph
 from app.core.orchestrator.memory import set_orchestrator_components
@@ -82,22 +66,7 @@ async def create_orchestrator_engine():
 
     memory_loader = MemoryLoader(store=store)
 
-    llm = get_llm_service().get_model()
-    longterm_extractor = LongTermExtractor(llm=llm, store=store)
-
     mq_service = await get_mq_service_instance()
-
-    mq_service.register_handler(QUEUE_CHECKPOINT_PERSIST, handle_checkpoint_persist)
-    mq_service.register_handler(QUEUE_CHECKPOINT_WRITES, handle_checkpoint_writes)
-    mq_service.register_handler(
-        QUEUE_LONGTERM,
-        lambda body: handle_longterm_extract(longterm_extractor, body),
-    )
-    mq_service.register_handler(QUEUE_SHORTMEM_COMPRESS, handle_shortmem_compress)
-    mq_service.register_handler(QUEUE_RAG_INGEST_REPO, handle_rag_ingest_repo)
-    mq_service.register_handler(QUEUE_RAG_INGEST_FILES, handle_rag_ingest_files)
-
-    await mq_service.start_workers()
 
     set_orchestrator_components(memory_loader=memory_loader, mq_service=mq_service)
 
