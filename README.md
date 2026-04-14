@@ -3,56 +3,8 @@
 基于 LangGraph 的智能多级 Agent 编排引擎，集成多级记忆系统和异步消息队列，为业务系统提供 AI 对话能力。
 
 ## 系统架构
+![alt text](image-1.png)
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                       业务系统 (Java / 其他)                       │
-│                   业务逻辑 / 认证 / 限流 / 持久化                   │
-└─────────────────────────────┬────────────────────────────────────┘
-                              │ HTTP (SSE / JSON)
-                              ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                  Python AI 对话引擎 (FastAPI)                      │
-│                                                                    │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │                   OrchestratorGraph                          │  │
-│  │                                                          │  │
-│  │    ┌──────────┐                                           │  │
-│  │    │  Router  │ ──► 模式匹配 / LLM 判断                     │  │
-│  │    └────┬─────┘                                           │  │
-│  │         │                                                  │  │
-│  │    ┌────┴────┐                                             │  │
-│  │    │         │                                             │  │
-│  │    ▼         ▼         ▼                                    │  │
-│  │ simple    complex   code_audit                              │  │
-│  │    │         │           │                                   │  │
-│  │    ▼         ▼           ▼                                   │  │
-│  │ Simple   Analyzer   CodeRetriever                           │  │
-│  │ Handler  │     │           │                                │  │
-│  │    │     ▼     ▼           ▼                                │  │
-│  │    │  Executor ──► Judge ◄── Analyzer (反思循环，最多3次)   │  │
-│  │    │     │         │      │                                │  │
-│  │    │     └─────────┴──────┘                                │  │
-│  │    │                   │                                    │  │
-│  │    └─────────┐         ▼                                    │  │
-│  │          Reporter   Vulnerability                            │  │
-│  │              │       Analyzer                                │  │
-│  │              └──────────┴────► AuditReporter                │  │
-│  │                                                           │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                    │
-│  ┌──────────────┐  ┌──────────────────┐  ┌────────────────────┐  │
-│  │ 记忆系统     │  │ 异步消息队列     │  │ 工具系统 (MCP)   │  │
-│  │ 短期+长期    │  │ (RabbitMQ)      │  │                   │  │
-│  └──────────────┘  └──────────────────┘  └────────────────────┘  │
-└──────────┬───────────────┬──────────────────┬────────────────────┘
-           │               │                  │
-           ▼               ▼                  ▼
-    ┌────────────┐  ┌──────────┐      ┌───────────┐
-    │  DashScope │  │  Redis   │      │ PostgreSQL │
-    │  (LLM/Emb) │  │ (缓存)   │      │ (pgvector) │
-    └────────────┘  └──────────┘      └───────────┘
-```
 
 ## 核心特性
 
@@ -92,8 +44,8 @@
 |------|------|
 | Web 框架 | FastAPI + Uvicorn |
 | Agent 框架 | LangGraph (StateGraph + create_agent) |
-| LLM | 阿里云 DashScope (Qwen 系列) |
-| Embedding | DashScope `text-embedding-v3` (1024 维) |
+| LLM | OpenAI 兼容 API (默认 gpt-4o-mini，支持 DashScope Qwen 系列) |
+| Embedding | OpenAI 兼容 API (默认 text-embedding-v3，1024 维) |
 | 数据库 | PostgreSQL 16 + pgvector |
 | 缓存 | Redis 7 |
 | 消息队列 | RabbitMQ 3.x (aio-pika) |
@@ -135,12 +87,22 @@ cp .env.example .env
 编辑 `.env` 文件，填入实际配置：
 
 ```env
-# LLM 配置 (DashScope)
-OPENAI_API_KEY=sk-your-api-key
+# LLM 配置 (OpenAI 兼容 API，支持 DashScope)
+OPENAI_API_KEY=your-actual-api-key
 OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-OPENAI_EMBEDING_MODEL=text-embedding-v3
+OPENAI_EMBEDDING_MODEL=text-embedding-v3
 OPENAI_EMBEDDING_DIMS=1024
-AGENT_MODEL_NAME=qwen3-max
+AGENT_MODEL_NAME=gpt-4o-mini
+
+# 数据库
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/ai_agent
+
+# Redis
+REDIS_URL=redis://localhost:6379/0
+
+# RabbitMQ
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+```
 
 # 数据库
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/ai_agent
@@ -207,53 +169,7 @@ docker-compose up -d
 
 ### 路由流程
 
-```
-用户消息
-    │
-    ▼
-┌─────────────────────────────────────────┐
-│              Router 节点                  │
-│  1. 模式匹配 (正则)                       │
-│     - simple: 问候、简单问答、翻译等       │
-│     - complex: 长文本、多步骤、代码生成等    │
-│     - code_audit: 代码审计、安全检查等      │
-│  2. LLM 兜底 (模式不匹配时)               │
-└─────────────────┬───────────────────────┘
-                  │
-        ┌─────────┼─────────┐
-        │         │         │
-        ▼         ▼         ▼
-    simple    complex   code_audit
-        │         │         │
-        ▼         ▼         ▼
-┌───────────┐ ┌─────────┐ ┌──────────────┐
-│Simple     │ │ Analyzer│ │ CodeRetriever│
-│Handler    │ └────┬────┘ └──────┬───────┘
-└─────┬─────┘      │             │
-      │            ▼             ▼
-      │     ┌───────────┐ ┌──────────────────┐
-      │     │  Executor │ │Vulnerability     │
-      │     └─────┬─────┘ │Analyzer          │
-      │           │       └────────┬─────────┘
-      │           ▼                ▼
-      │     ┌───────────┐ ┌──────────────┐
-      │     │   Judge   │ │AuditReporter │
-      │     └─────┬─────┘ └──────┬───────┘
-      │           │              │
-      │    ┌──────┴──────┐       │
-      │    │             │       │
-      │ 未通过 ✓      通过 ✗       │
-      │    │             │       │
-      │    ▼             ▼       ▼
-      │ ┌────────┐  ┌────────┐  END
-      │ │Analyzer │  │Reporter│
-      │ └────────┘  └────────┘
-      │    (重试≤3)    │
-      └──────┬─────────┘
-             │
-             ▼
-            END
-```
+![alt text](image.png)
 
 ### 反思循环
 
@@ -570,11 +486,11 @@ ai-agent-engine/
 | `DATABASE_URL` | postgresql+asyncpg://... | PostgreSQL 连接 URL |
 | `REDIS_URL` | redis://localhost:6379/0 | Redis 连接 URL |
 | `RABBITMQ_URL` | amqp://guest:guest@localhost:5672/ | RabbitMQ 连接 URL |
-| `OPENAI_API_KEY` | - | DashScope API Key |
-| `OPENAI_BASE_URL` | https://dashscope.aliyuncs.com/compatible-mode/v1 | DashScope 兼容模式 URL |
+| `OPENAI_API_KEY` | - | OpenAI API Key（必需） |
+| `OPENAI_BASE_URL` | https://api.openai.com/v1 | OpenAI API Base URL |
 | `OPENAI_EMBEDDING_MODEL` | text-embedding-v3 | Embedding 模型名称 |
 | `OPENAI_EMBEDDING_DIMS` | 1024 | Embedding 向量维度 |
-| `AGENT_MODEL_NAME` | qwen3-max | Agent LLM 模型名称 |
+| `AGENT_MODEL_NAME` | gpt-4o-mini | Agent LLM 模型名称 |
 | `LOG_LEVEL` | INFO | 日志级别 |
 | `LOG_FORMAT` | json | 日志格式 (json/console) |
 
