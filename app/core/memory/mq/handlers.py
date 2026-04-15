@@ -56,33 +56,10 @@ async def handle_longterm_extract(message: dict[str, Any]) -> None:
     if user_id and msgs:
         from app.core.memory.longterm.extractor import LongTermExtractor
         from app.core.llm.service import get_llm_service
-        from langgraph.store.postgres.aio import AsyncPostgresStore
-        from psycopg_pool import AsyncConnectionPool
-        from app.config.settings import get_settings
+        from app.core.memory.longterm.store import get_longterm_store
 
-        settings = get_settings()
         llm = get_llm_service().get_model()
-
-        async def _configure_conn(conn):
-            await conn.set_autocommit(True)
-
-        pg_pool = AsyncConnectionPool(
-            conninfo=settings.database_url.replace("+asyncpg", ""),
-            min_size=2,
-            max_size=10,
-            configure=_configure_conn,
-        )
-        await pg_pool.open()
-
-        store = AsyncPostgresStore(
-            conn=pg_pool,
-            index={
-                "dims": settings.openai_embedding_dims,
-                "embed": llm,
-                "fields": ["content", "category"],
-            },
-        )
-        await store.setup()
+        store = await get_longterm_store()
 
         longterm_extractor = LongTermExtractor(llm=llm, store=store)
         await longterm_extractor.extract_and_store(user_id, thread_id, msgs)
@@ -97,8 +74,13 @@ async def handle_shortmem_compress(message: dict[str, Any]) -> None:
 
     从 MQ 消息中获取待压缩的消息内容，生成摘要并更新 Redis
 
+    增量压缩逻辑:
+    - 根据 compress_start 和 compress_end 确定本次需要压缩的消息范围
+    - 只压缩指定范围的消息，避免重复压缩已摘要的内容
+    - 压缩成功后更新 last_compress_idx
+
     Args:
-        message: MQ 消息，包含 session_id, messages, old_summary
+        message: MQ 消息，包含 session_id, messages, old_summary, compress_start, compress_end
     """
     from app.core.memory.shortmem import (
         KEEP_FRESH_MESSAGES,
@@ -109,6 +91,8 @@ async def handle_shortmem_compress(message: dict[str, Any]) -> None:
     session_id = message.get("session_id", "")
     messages = message.get("messages", [])
     old_summary = message.get("old_summary", "")
+    compress_start = message.get("compress_start", 0)
+    compress_end = message.get("compress_end", 0)
 
     if not session_id:
         logger.warning("短期记忆压缩任务缺少 session_id")
@@ -118,22 +102,38 @@ async def handle_shortmem_compress(message: dict[str, Any]) -> None:
         logger.info("无消息需要压缩", session_id=session_id)
         return
 
-    keep_count = KEEP_FRESH_MESSAGES
-    if len(messages) <= keep_count:
-        logger.info("消息数量少于保留数量，无需压缩", session_id=session_id, msg_count=len(messages))
+    if compress_end <= compress_start:
+        logger.info(
+            "无新消息需要压缩，压缩范围无效",
+            session_id=session_id,
+            compress_start=compress_start,
+            compress_end=compress_end,
+        )
         return
 
-    to_compress = messages[:-keep_count]
+    if compress_start >= len(messages) or compress_end > len(messages):
+        logger.warning(
+            "压缩范围超出消息长度",
+            session_id=session_id,
+            compress_start=compress_start,
+            compress_end=compress_end,
+            msg_count=len(messages),
+        )
+        return
+
+    to_compress = messages[compress_start:compress_end]
     summary_text = await _generate_summary(to_compress, old_summary, session_id)
 
     success = await set_short_term_summary(session_id, summary_text)
     if success:
-        await reset_msg_count_after_compress(session_id)
+        await reset_msg_count_after_compress(session_id, compress_end)
         logger.info(
             "短期记忆压缩完成",
             session_id=session_id,
+            compress_start=compress_start,
+            compress_end=compress_end,
             compressed_count=len(to_compress),
-            kept_count=keep_count,
+            kept_count=KEEP_FRESH_MESSAGES,
             summary_len=len(summary_text),
         )
     else:

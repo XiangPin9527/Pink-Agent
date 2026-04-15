@@ -41,12 +41,16 @@ class MQPublisher:
         messages: list,
         old_summary: str,
         trigger_count: int,
+        compress_start: int = 0,
+        compress_end: int = 0,
     ) -> bool:
         return await self.publish(self.ROUTING_SHORTMEM_COMPRESS, {
             "session_id": session_id,
             "messages": messages,
             "old_summary": old_summary,
             "trigger_count": trigger_count,
+            "compress_start": compress_start,
+            "compress_end": compress_end,
         })
 
     async def publish_longterm_extract(

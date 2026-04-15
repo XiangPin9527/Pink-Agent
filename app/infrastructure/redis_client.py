@@ -19,15 +19,21 @@ async def get_redis() -> redis.Redis:
         async with _redis_lock:
             if _redis is None:
                 settings = get_settings()
-                _redis = redis.Redis.from_url(
+                client = redis.Redis.from_url(
                     settings.redis_url,
                     decode_responses=True,
                     max_connections=20,
                     socket_connect_timeout=REDIS_SOCKET_CONNECT_TIMEOUT,
                     socket_timeout=REDIS_SOCKET_TIMEOUT,
                 )
+                try:
+                    await client.ping()
+                except Exception:
+                    await client.aclose()
+                    raise
+                _redis = client
                 logger.info(
-                    "Redis 连接池初始化完成",
+                    "Redis 连接验证成功",
                     redis_url=settings.redis_url,
                     connect_timeout=REDIS_SOCKET_CONNECT_TIMEOUT,
                     socket_timeout=REDIS_SOCKET_TIMEOUT,

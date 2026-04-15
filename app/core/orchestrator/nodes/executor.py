@@ -13,6 +13,8 @@ from app.core.orchestrator.utils import _extract_recent_messages, load_ltm_conte
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+MAX_RECENT_MESSAGES_WITHOUT_SUMMARY = 50
+MIN_RECENT_MESSAGES = 1
 
 
 EXECUTOR_SYSTEM_PROMPT = """# 角色定义
@@ -108,7 +110,14 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
             ltm_context = re.sub(r"^\n\n已知用户背景信息：\n", "", ltm_raw)
             logger.info("Executor 长期记忆加载完成", ltm_context=ltm_context)
 
-    recent_history = _extract_recent_messages(messages, current_count if current_count > 0 else COMPRESS_THRESHOLD)
+    if stm_summary:
+        recent_window = current_count if current_count > 0 else COMPRESS_THRESHOLD
+    else:
+        recent_window = min(
+            max(len(messages) - 1, MIN_RECENT_MESSAGES),
+            MAX_RECENT_MESSAGES_WITHOUT_SUMMARY,
+        )
+    recent_history = _extract_recent_messages(messages, recent_window)
     recent_history_text = ""
     if recent_history:
         recent_history_text = "\n".join(
@@ -176,7 +185,8 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
         step_result = ""
 
         try:
-            result = await agent.ainvoke({"messages": [HumanMessage(content=step_input)]})
+            config = {"configurable": {"thread_id": session_id}}
+            result = await agent.ainvoke({"messages": [HumanMessage(content=step_input)]}, config=config)
             # logger.info(f"agent执行结果：{result}")
             if isinstance(result, dict) and "messages" in result:
                 messages = result["messages"]

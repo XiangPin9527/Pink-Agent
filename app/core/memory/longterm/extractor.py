@@ -92,7 +92,7 @@ class LongTermExtractor:
         try:
             response = await structured_llm.ainvoke([
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"请从以下对话中提取值得长期记住的信息：\n\n{conversation}"},
+                {"role": "user", "content": f"请从以下对话中提取值得长期记住的信息，并以JSON格式返回：\n\n{conversation}"},
             ])
             if response and isinstance(response, MemoryList):
                 logger.info(f"提取到的长期记忆：{response.memories}")

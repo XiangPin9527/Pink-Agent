@@ -151,6 +151,12 @@ class RetrievalStore:
                 "language_count": row["language_count"],
             }
 
+    async def aclose(self) -> None:
+        if self._engine is not None and hasattr(self._engine, "close"):
+            await self._engine.close()
+        self._engine = None
+        self._store = None
+
 
 _retrieval_store: Optional[RetrievalStore] = None
 

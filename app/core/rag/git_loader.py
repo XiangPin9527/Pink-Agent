@@ -1,6 +1,7 @@
 import os
 import asyncio
 import fnmatch
+import tempfile
 import uuid
 from typing import Optional
 
@@ -24,7 +25,8 @@ class GitRepoLoader:
         logger.info("开始克隆仓库", repo_url=repo_url, branch=branch)
 
         sub_dir = f"rag_repo_{uuid.uuid4().hex[:8]}"
-        temp_dir = os.path.join(r"E:\Python\Temp", sub_dir)
+        base_tmp = os.environ.get("RAG_TEMP_DIR") or tempfile.gettempdir()
+        temp_dir = os.path.join(base_tmp, "ai-agent-engine", sub_dir)
         os.makedirs(temp_dir, exist_ok=True)
 
         def _do_clone():

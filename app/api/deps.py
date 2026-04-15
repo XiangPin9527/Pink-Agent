@@ -1,6 +1,7 @@
 from functools import lru_cache
 
 from app.config.settings import Settings, get_settings
+from app.infrastructure.resources import get_app_resources
 
 
 @lru_cache
@@ -8,16 +9,12 @@ def get_settings_dep() -> Settings:
     return get_settings()
 
 
-_orchestrator_engine = None
-
-
 async def get_orchestrator_engine_dep():
-    """获取编排引擎实例（路由+简单/复杂双路径）"""
-    global _orchestrator_engine
-    if _orchestrator_engine is None:
-        from app.core.agent.engine import create_orchestrator_engine
-        _orchestrator_engine = await create_orchestrator_engine()
-    yield _orchestrator_engine
+    """获取编排引擎实例（由应用资源容器统一管理）"""
+    resources = await get_app_resources()
+    if not resources.initialized:
+        await resources.init_all()
+    yield resources.orchestrator_graph
 
 
 def get_llm_service_dep():

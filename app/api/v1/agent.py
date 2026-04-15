@@ -27,8 +27,8 @@ async def chat_stream(
     """
 
     async def event_generator() -> AsyncGenerator[dict, None]:
+        """流式输出（保持走 Graph，以便使用 checkpointer 与 store）。"""
         config = {"configurable": {"thread_id": request.session_id}}
-
         try:
             initial_state = {
                 "messages": [HumanMessage(content=request.message)],
@@ -52,27 +52,17 @@ async def chat_stream(
             async for msg_chunk, metadata in graph.astream(
                 initial_state,
                 config=config,
-                stream_mode="messages"
+                stream_mode="messages",
             ):
-                if hasattr(msg_chunk, 'content') and msg_chunk.content:
+                if hasattr(msg_chunk, "content") and msg_chunk.content:
                     yield {
                         "event": "message",
-                        "data": json.dumps({
-                            "type": "content",
-                            "text": msg_chunk.content,
-                        }, ensure_ascii=False),
+                        "data": json.dumps({"type": "content", "text": msg_chunk.content}, ensure_ascii=False),
                     }
 
-            yield {
-                "event": "message",
-                "data": json.dumps({"type": "done"}, ensure_ascii=False)
-            }
-
+            yield {"event": "message", "data": json.dumps({"type": "done"}, ensure_ascii=False)}
         except Exception as e:
-            yield {
-                "event": "error",
-                "data": json.dumps({"type": "error", "message": str(e)}),
-            }
+            yield {"event": "error", "data": json.dumps({"type": "error", "message": str(e)})}
 
     return EventSourceResponse(event_generator())
 

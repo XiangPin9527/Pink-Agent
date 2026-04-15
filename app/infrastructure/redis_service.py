@@ -10,6 +10,7 @@ logger = get_logger(__name__)
 class RedisService:
     REDIS_KEY_SUMMARY_PREFIX = "stm_summary"
     REDIS_KEY_MSG_COUNT_PREFIX = "stm_msg_count"
+    REDIS_KEY_LAST_COMPRESS_IDX_PREFIX = "stm_last_compress_idx"
     REDIS_KEY_LTM_LAST_EXTRACT_PREFIX = "ltm_last_extract"
     REDIS_KEY_CP_PREFIX = "cp"
 
@@ -18,6 +19,9 @@ class RedisService:
 
     def _get_msg_count_key(self, session_id: str) -> str:
         return f"{self.REDIS_KEY_MSG_COUNT_PREFIX}:{session_id}"
+
+    def _get_last_compress_idx_key(self, session_id: str) -> str:
+        return f"{self.REDIS_KEY_LAST_COMPRESS_IDX_PREFIX}:{session_id}"
 
     def _get_ltm_extract_key(self, thread_id: str) -> str:
         return f"{self.REDIS_KEY_LTM_LAST_EXTRACT_PREFIX}:{thread_id}"
@@ -73,6 +77,26 @@ class RedisService:
         except Exception as e:
             logger.error("递增消息计数失败", session_id=session_id, error=str(e))
             return 0
+
+    async def get_last_compress_idx(self, session_id: str) -> int:
+        try:
+            r = await get_redis()
+            idx = await r.get(self._get_last_compress_idx_key(session_id))
+            if idx:
+                return int(idx) if isinstance(idx, bytes) else int(idx)
+            return 0
+        except Exception as e:
+            logger.warning("获取上次压缩位置失败", session_id=session_id, error=str(e))
+            return 0
+
+    async def set_last_compress_idx(self, session_id: str, idx: int) -> bool:
+        try:
+            r = await get_redis()
+            await r.set(self._get_last_compress_idx_key(session_id), str(idx))
+            return True
+        except Exception as e:
+            logger.error("设置上次压缩位置失败", session_id=session_id, error=str(e))
+            return False
 
     async def get_checkpoint(self, thread_id: str, ns: str = "") -> Optional[dict]:
         try:

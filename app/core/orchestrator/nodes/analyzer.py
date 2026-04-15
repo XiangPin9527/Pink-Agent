@@ -16,6 +16,8 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 MAX_RECENT_MESSAGES = 20
+MAX_RECENT_MESSAGES_WITHOUT_SUMMARY = 50
+MIN_RECENT_MESSAGES = 1
 
 
 class ExecutionStepOutput(BaseModel):
@@ -69,10 +71,9 @@ def _build_execution_plan(parsed: ExecutionPlanOutput) -> ExecutionPlan:
 
 
 async def analyzer(state: OrchestratorState) -> OrchestratorState:
-    from langchain_core.messages import HumanMessage
     from app.core.llm.service import get_llm_service
     from app.core.orchestrator.memory import get_memory_loader
-    from app.core.memory.shortmem import get_short_term_summary
+    from app.core.memory.shortmem import get_short_term_summary, get_msg_count
 
     session_id = state["session_id"]
     user_id = state["user_id"]
@@ -115,7 +116,18 @@ async def analyzer(state: OrchestratorState) -> OrchestratorState:
     if stm_summary:
         system_prompt += f"\n\n【之前对话的简短摘要】:\n{stm_summary}\n"
 
-    recent_history = _extract_recent_messages(messages, MAX_RECENT_MESSAGES)
+    msg_count = await get_msg_count(session_id)
+    if stm_summary:
+        # 有摘要时优先使用 Redis 计数器；计数器异常时回退到默认窗口。
+        recent_window = msg_count if msg_count > 0 else MAX_RECENT_MESSAGES
+    else:
+        # 无摘要时用 state 中真实消息长度估算窗口，避免上下文突然变空。
+        recent_window = min(
+            max(len(messages) - 1, MIN_RECENT_MESSAGES),
+            MAX_RECENT_MESSAGES_WITHOUT_SUMMARY,
+        )
+
+    recent_history = _extract_recent_messages(messages, recent_window)
     if recent_history:
         history_context = "\n\n最近对话历史：\n" + "\n".join(
             f"[{msg.__class__.__name__}]: {msg.content[:200]}" +

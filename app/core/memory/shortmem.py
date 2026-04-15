@@ -122,6 +122,35 @@ async def increment_msg_count(session_id: str) -> int:
     return await redis_service.increment_msg_count(session_id)
 
 
+async def get_last_compress_idx(session_id: str) -> int:
+    """
+    获取上次压缩截止位置
+
+    Args:
+        session_id: 会话 ID
+
+    Returns:
+        上次压缩的截止位置索引，0表示首次压缩
+    """
+    redis_service = get_redis_service()
+    return await redis_service.get_last_compress_idx(session_id)
+
+
+async def set_last_compress_idx(session_id: str, idx: int) -> bool:
+    """
+    设置上次压缩截止位置
+
+    Args:
+        session_id: 会话 ID
+        idx: 压缩截止位置索引
+
+    Returns:
+        是否设置成功
+    """
+    redis_service = get_redis_service()
+    return await redis_service.set_last_compress_idx(session_id, idx)
+
+
 async def increment_and_check_compress(
     session_id: str,
     messages: list,
@@ -133,7 +162,12 @@ async def increment_and_check_compress(
     这是主要的入口函数，每次处理完用户消息后调用：
     1. 递增 Redis 计数器
     2. 检查是否达到压缩阈值
-    3. 如果达到阈值，触发压缩（MQ异步）并重置计数器
+    3. 如果达到阈值，计算增量压缩范围并触发 MQ 任务
+
+    增量压缩逻辑:
+    - 从上次压缩截止位置(last_compress_idx)开始
+    - 到总消息数减去保留新鲜消息的数量(total - KEEP_FRESH_MESSAGES)结束
+    - 只压缩新增的消息，避免重复压缩已摘要的内容
 
     Args:
         session_id: 会话 ID
@@ -152,18 +186,34 @@ async def increment_and_check_compress(
         )
 
         if new_count >= COMPRESS_THRESHOLD:
-            mq_publisher = get_mq_publisher()
-            await mq_publisher.publish_shortmem_compress(
-                session_id,
-                _serialize_messages(messages),
-                old_summary,
-                new_count,
-            )
-            logger.info(
-                "触发短期记忆压缩",
-                session_id=session_id,
-                trigger_count=new_count,
-            )
+            last_idx = await get_last_compress_idx(session_id)
+            total_msgs = len(messages)
+            compress_end = total_msgs - KEEP_FRESH_MESSAGES
+
+            if compress_end > last_idx:
+                mq_publisher = get_mq_publisher()
+                await mq_publisher.publish_shortmem_compress(
+                    session_id,
+                    _serialize_messages(messages),
+                    old_summary,
+                    new_count,
+                    last_idx,
+                    compress_end,
+                )
+                logger.info(
+                    "触发短期记忆压缩",
+                    session_id=session_id,
+                    last_idx=last_idx,
+                    compress_end=compress_end,
+                    total_msgs=total_msgs,
+                )
+            else:
+                logger.debug(
+                    "无新消息需要压缩",
+                    session_id=session_id,
+                    last_idx=last_idx,
+                    compress_end=compress_end,
+                )
             return True
         return False
     except Exception as e:
@@ -171,17 +221,17 @@ async def increment_and_check_compress(
         return False
 
 
-async def reset_msg_count_after_compress(session_id: str) -> bool:
+async def reset_msg_count_after_compress(session_id: str, last_compress_idx: int) -> bool:
     """
-    压缩完成后重置消息计数器
+    压缩完成后重置消息计数器并更新压缩位置
 
-    压缩完成后，将计数器重置为 KEEP_FRESH_MESSAGES，表示：
-    - 已经压缩了一批消息
-    - 保留了 KEEP_FRESH_MESSAGES 条最新消息在"未压缩"状态
-    - 下次递增从 KEEP_FRESH_MESSAGES + 1 开始
+    压缩完成后执行：
+    1. 将计数器重置为 KEEP_FRESH_MESSAGES
+    2. 更新压缩截止位置(last_compress_idx)
 
     Args:
         session_id: 会话 ID
+        last_compress_idx: 本次压缩的截止位置索引
 
     Returns:
         是否重置成功
@@ -189,14 +239,16 @@ async def reset_msg_count_after_compress(session_id: str) -> bool:
     redis_service = get_redis_service()
     try:
         await redis_service.set_msg_count(session_id, KEEP_FRESH_MESSAGES)
+        await redis_service.set_last_compress_idx(session_id, last_compress_idx)
         logger.debug(
-            "压缩后计数器已重置",
+            "压缩后状态已重置",
             session_id=session_id,
             new_count=KEEP_FRESH_MESSAGES,
+            last_compress_idx=last_compress_idx,
         )
         return True
     except Exception as e:
-        logger.error("重置压缩后计数器失败", session_id=session_id, error=str(e))
+        logger.error("重置压缩后状态失败", session_id=session_id, error=str(e))
         return False
 
 
@@ -230,6 +282,8 @@ __all__ = [
     "get_msg_count",
     "set_msg_count",
     "increment_msg_count",
+    "get_last_compress_idx",
+    "set_last_compress_idx",
     "increment_and_check_compress",
     "reset_msg_count_after_compress",
     "init_msg_count_if_needed",
