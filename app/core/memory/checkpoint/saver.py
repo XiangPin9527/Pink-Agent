@@ -45,7 +45,7 @@ class RedisPostgresSaver(BaseCheckpointSaver):
     """
     两级缓存 CheckpointSaver
 
-    L1: Redis — 存储最新 checkpoint（同步读写，快速）
+    L1: Redis — 存储所有 checkpoint，按 checkpoint_id 区分（同步读写，快速）
     L2: PostgreSQL — 存储完整 checkpoint 历史（RabbitMQ 异步写入）
 
     写入流程:
@@ -54,7 +54,9 @@ class RedisPostgresSaver(BaseCheckpointSaver):
       3. MQ 投递失败时降级为同步写入 PostgreSQL
 
     Redis 数据结构:
-      cp:{thread_id}:{ns}       → 最新 checkpoint (serde typed, base64)
+      cp:{thread_id}:{ns}:{checkpoint_id}  → 单个 checkpoint (serde typed, base64)
+      cp_ids:{thread_id}:{ns}              → SET，存储所有 checkpoint_id
+      TTL: 3 天
     """
 
     def __init__(self, serde: SerializerProtocol | None = None):
@@ -85,7 +87,7 @@ class RedisPostgresSaver(BaseCheckpointSaver):
                 "meta_data": meta_b64,
                 "parent_checkpoint_id": parent_checkpoint_id,
             }
-            await redis_service.set_checkpoint(thread_id, ns, payload)
+            await redis_service.set_checkpoint(thread_id, ns, checkpoint_id, payload)
             logger.debug("Checkpoint 写入 Redis", thread_id=thread_id, checkpoint_id=checkpoint_id)
         except Exception as e:
             logger.warning("Checkpoint 写入 Redis 失败，跳过", thread_id=thread_id, error=str(e))
@@ -167,47 +169,101 @@ class RedisPostgresSaver(BaseCheckpointSaver):
         thread_id = _thread_id(config)
         ns = _checkpoint_ns(config)
 
+        checkpoint_ids: list[str] = []
+        redis_has_all = True
+
         try:
-            db_service = get_db_service()
+            redis_service = get_redis_service()
+            checkpoint_ids = await redis_service.get_checkpoint_ids(thread_id, ns)
+        except Exception as e:
+            logger.warning("从 Redis 获取 checkpoint IDs 失败，降级到 PostgreSQL", thread_id=thread_id, error=str(e))
+            redis_has_all = False
+
+        if redis_has_all and checkpoint_ids:
             before_checkpoint_id = None
             if before:
                 before_checkpoint_id = before.get("configurable", {}).get("checkpoint_id")
 
-            rows = await db_service.list_checkpoints(thread_id, ns, before_checkpoint_id, limit)
+            filtered_ids = checkpoint_ids
+            if before_checkpoint_id:
+                filtered_ids = [cid for cid in checkpoint_ids if cid < before_checkpoint_id]
 
-            for row in rows:
-                cp_type = row["type"] or "msgpack"
-                cp_data = row["checkpoint"]
-                meta_type = cp_type
-                meta_data = row["metadata"]
+            if limit:
+                filtered_ids = filtered_ids[-limit:]
 
-                cp_obj = self.serde.loads_typed((cp_type, cp_data))
-                meta_obj = self.serde.loads_typed((meta_type, meta_data)) if meta_data else CheckpointMetadata()
+            for cp_id in filtered_ids:
+                try:
+                    checkpoint, metadata, parent_id = await self._load_from_redis(
+                        thread_id, ns, cp_id
+                    )
+                    if checkpoint:
+                        yield CheckpointTuple(
+                            config={
+                                "configurable": {
+                                    "thread_id": thread_id,
+                                    "checkpoint_ns": ns,
+                                    "checkpoint_id": checkpoint["id"],
+                                }
+                            },
+                            checkpoint=checkpoint,
+                            metadata=metadata or CheckpointMetadata(),
+                            parent_config=(
+                                {
+                                    "configurable": {
+                                        "thread_id": thread_id,
+                                        "checkpoint_ns": ns,
+                                        "checkpoint_id": parent_id,
+                                    }
+                                }
+                                if parent_id
+                                else None
+                            ),
+                        )
+                except Exception as e:
+                    logger.warning("从 Redis 加载 Checkpoint 失败，跳过", thread_id=thread_id, checkpoint_id=cp_id, error=str(e))
+                    continue
+        else:
+            try:
+                db_service = get_db_service()
+                before_checkpoint_id = None
+                if before:
+                    before_checkpoint_id = before.get("configurable", {}).get("checkpoint_id")
 
-                yield CheckpointTuple(
-                    config={
-                        "configurable": {
-                            "thread_id": thread_id,
-                            "checkpoint_ns": ns,
-                            "checkpoint_id": row["checkpoint_id"],
-                        }
-                    },
-                    checkpoint=cp_obj,
-                    metadata=meta_obj,
-                    parent_config=(
-                        {
+                rows = await db_service.list_checkpoints(thread_id, ns, before_checkpoint_id, limit)
+
+                for row in rows:
+                    cp_type = row["type"] or "msgpack"
+                    cp_data = row["checkpoint"]
+                    meta_type = cp_type
+                    meta_data = row["metadata"]
+
+                    cp_obj = self.serde.loads_typed((cp_type, cp_data))
+                    meta_obj = self.serde.loads_typed((meta_type, meta_data)) if meta_data else CheckpointMetadata()
+
+                    yield CheckpointTuple(
+                        config={
                             "configurable": {
                                 "thread_id": thread_id,
                                 "checkpoint_ns": ns,
-                                "checkpoint_id": row["parent_checkpoint_id"],
+                                "checkpoint_id": row["checkpoint_id"],
                             }
-                        }
-                        if row["parent_checkpoint_id"]
-                        else None
-                    ),
-                )
-        except Exception as e:
-            logger.error("从 PostgreSQL 列出 Checkpoint 失败", thread_id=thread_id, error=str(e))
+                        },
+                        checkpoint=cp_obj,
+                        metadata=meta_obj,
+                        parent_config=(
+                            {
+                                "configurable": {
+                                    "thread_id": thread_id,
+                                    "checkpoint_ns": ns,
+                                    "checkpoint_id": row["parent_checkpoint_id"],
+                                }
+                            }
+                            if row["parent_checkpoint_id"]
+                            else None
+                        ),
+                    )
+            except Exception as e:
+                logger.error("从 PostgreSQL 列出 Checkpoint 失败", thread_id=thread_id, error=str(e))
 
     async def aput_writes(
         self,
@@ -265,7 +321,12 @@ class RedisPostgresSaver(BaseCheckpointSaver):
     ) -> tuple[Checkpoint | None, CheckpointMetadata | None, str | None]:
         try:
             redis_service = get_redis_service()
-            payload = await redis_service.get_checkpoint(thread_id, ns)
+
+            if checkpoint_id:
+                payload = await redis_service.get_checkpoint_by_id(thread_id, ns, checkpoint_id)
+            else:
+                payload = await redis_service.get_checkpoint(thread_id, ns)
+
             if not payload:
                 return None, None, None
 
@@ -282,7 +343,7 @@ class RedisPostgresSaver(BaseCheckpointSaver):
 
             return cp_obj, meta_obj, parent_id
         except Exception as e:
-            logger.warning("从 Redis 加载 Checkpoint 失败", thread_id=thread_id, error=str(e))
+            logger.warning("从 Redis 加载 Checkpoint 失败", thread_id=thread_id, checkpoint_id=checkpoint_id, error=str(e))
             return None, None, None
 
     async def _load_from_db(

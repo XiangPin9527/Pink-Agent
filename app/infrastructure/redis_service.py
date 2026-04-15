@@ -6,6 +6,8 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+CHECKPOINT_TTL_SECONDS = 3 * 24 * 60 * 60
+
 
 class RedisService:
     REDIS_KEY_SUMMARY_PREFIX = "stm_summary"
@@ -13,6 +15,7 @@ class RedisService:
     REDIS_KEY_LAST_COMPRESS_IDX_PREFIX = "stm_last_compress_idx"
     REDIS_KEY_LTM_LAST_EXTRACT_PREFIX = "ltm_last_extract"
     REDIS_KEY_CP_PREFIX = "cp"
+    REDIS_KEY_CP_IDS_PREFIX = "cp_ids"
 
     def _get_summary_key(self, session_id: str) -> str:
         return f"{self.REDIS_KEY_SUMMARY_PREFIX}:{session_id}"
@@ -26,8 +29,13 @@ class RedisService:
     def _get_ltm_extract_key(self, thread_id: str) -> str:
         return f"{self.REDIS_KEY_LTM_LAST_EXTRACT_PREFIX}:{thread_id}"
 
-    def _get_cp_key(self, thread_id: str, ns: str = "") -> str:
+    def _get_cp_key(self, thread_id: str, ns: str = "", checkpoint_id: str = "") -> str:
+        if checkpoint_id:
+            return f"{self.REDIS_KEY_CP_PREFIX}:{thread_id}:{ns}:{checkpoint_id}"
         return f"{self.REDIS_KEY_CP_PREFIX}:{thread_id}:{ns}"
+
+    def _get_cp_ids_key(self, thread_id: str, ns: str = "") -> str:
+        return f"{self.REDIS_KEY_CP_IDS_PREFIX}:{thread_id}:{ns}"
 
     async def get_short_term_summary(self, session_id: str) -> str:
         try:
@@ -98,22 +106,97 @@ class RedisService:
             logger.error("设置上次压缩位置失败", session_id=session_id, error=str(e))
             return False
 
-    async def get_checkpoint(self, thread_id: str, ns: str = "") -> Optional[dict]:
+    async def get_checkpoint_ids(self, thread_id: str, ns: str = "") -> list[str]:
         try:
             r = await get_redis()
-            data = await r.get(self._get_cp_key(thread_id, ns))
+            ids_key = self._get_cp_ids_key(thread_id, ns)
+            members = await r.smembers(ids_key)
+            if members:
+                return sorted([m.decode() if isinstance(m, bytes) else m for m in members])
+            return []
+        except Exception as e:
+            logger.warning("获取checkpoint IDs失败", thread_id=thread_id, error=str(e))
+            return []
+
+    async def add_checkpoint_id(
+        self, thread_id: str, ns: str, checkpoint_id: str
+    ) -> bool:
+        try:
+            r = await get_redis()
+            ids_key = self._get_cp_ids_key(thread_id, ns)
+            await r.sadd(ids_key, checkpoint_id)
+            await r.expire(ids_key, CHECKPOINT_TTL_SECONDS)
+            return True
+        except Exception as e:
+            logger.error("添加checkpoint ID失败", thread_id=thread_id, checkpoint_id=checkpoint_id, error=str(e))
+            return False
+
+    async def get_checkpoint_by_id(
+        self, thread_id: str, ns: str, checkpoint_id: str
+    ) -> Optional[dict]:
+        try:
+            r = await get_redis()
+            key = self._get_cp_key(thread_id, ns, checkpoint_id)
+            data = await r.get(key)
             if data:
                 raw = data if isinstance(data, str) else data.decode()
                 return orjson.loads(raw)
             return None
         except Exception as e:
-            logger.warning("获取checkpoint失败", thread_id=thread_id, error=str(e))
+            logger.warning("获取checkpoint失败", thread_id=thread_id, checkpoint_id=checkpoint_id, error=str(e))
             return None
 
-    async def set_checkpoint(self, thread_id: str, ns: str, payload: dict) -> bool:
+    async def set_checkpoint_by_id(
+        self,
+        thread_id: str,
+        ns: str,
+        checkpoint_id: str,
+        payload: dict,
+    ) -> bool:
         try:
             r = await get_redis()
-            await r.set(self._get_cp_key(thread_id, ns), orjson.dumps(payload).decode("utf-8"))
+            key = self._get_cp_key(thread_id, ns, checkpoint_id)
+            await r.set(
+                key,
+                orjson.dumps(payload).decode("utf-8"),
+                ex=CHECKPOINT_TTL_SECONDS,
+            )
+            return True
+        except Exception as e:
+            logger.error("设置checkpoint失败", thread_id=thread_id, checkpoint_id=checkpoint_id, error=str(e))
+            return False
+
+    async def delete_checkpoint(
+        self, thread_id: str, ns: str, checkpoint_id: str
+    ) -> bool:
+        try:
+            r = await get_redis()
+            key = self._get_cp_key(thread_id, ns, checkpoint_id)
+            await r.delete(key)
+            ids_key = self._get_cp_ids_key(thread_id, ns)
+            await r.srem(ids_key, checkpoint_id)
+            return True
+        except Exception as e:
+            logger.error("删除checkpoint失败", thread_id=thread_id, checkpoint_id=checkpoint_id, error=str(e))
+            return False
+
+    async def get_checkpoint(self, thread_id: str, ns: str = "") -> Optional[dict]:
+        try:
+            ids = await self.get_checkpoint_ids(thread_id, ns)
+            if not ids:
+                return None
+            latest_id = ids[-1]
+            return await self.get_checkpoint_by_id(thread_id, ns, latest_id)
+        except Exception as e:
+            logger.warning("获取最新checkpoint失败", thread_id=thread_id, error=str(e))
+            return None
+
+    async def set_checkpoint(
+        self, thread_id: str, ns: str, checkpoint_id: str, payload: dict
+    ) -> bool:
+        try:
+            await self.set_checkpoint_by_id(thread_id, ns, checkpoint_id, payload)
+            await self.add_checkpoint_id(thread_id, ns, checkpoint_id)
             return True
         except Exception as e:
             logger.error("设置checkpoint失败", thread_id=thread_id, error=str(e))
