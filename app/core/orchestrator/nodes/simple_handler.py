@@ -78,6 +78,14 @@ async def simple_handler(state: OrchestratorState) -> OrchestratorState:
         stm_context = f"【之前对话的简短摘要】:\n{stm_summary}\n"
         input_messages.append(SystemMessage(content=stm_context, id="shortmem_context"))
 
+    from app.core.memory.user_instruction import get_user_instruction_service
+    user_instruction_service = get_user_instruction_service()
+    user_instruction = await user_instruction_service.get(user_id)
+    if user_instruction:
+        user_instruction_text = user_instruction_service.format_for_system_prompt(user_instruction)
+        if user_instruction_text:
+            input_messages.append(SystemMessage(content=user_instruction_text, id="user_instruction"))
+
     if current_count == 0:
         max_to_load = COMPRESS_THRESHOLD
     else:

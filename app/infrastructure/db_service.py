@@ -143,6 +143,70 @@ class DbService:
             logger.error("列出checkpoints失败", thread_id=thread_id, error=str(e))
             return []
 
+    async def get_user_instruction(self, user_id: str) -> Optional[dict]:
+        try:
+            pool = await get_db_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT user_id, instruction_content, version, created_at, updated_at
+                    FROM user_instructions
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                )
+                if not row:
+                    return None
+                return {
+                    "user_id": row["user_id"],
+                    "content": row["instruction_content"],
+                    "version": row["version"],
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                }
+        except Exception as e:
+            logger.error("查询用户指令失败", user_id=user_id, error=str(e))
+            return None
+
+    async def save_user_instruction(
+        self, user_id: str, content: str, version: int
+    ) -> bool:
+        try:
+            pool = await get_db_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO user_instructions (user_id, instruction_content, version)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET instruction_content = EXCLUDED.instruction_content,
+                                  version = EXCLUDED.version,
+                                  updated_at = NOW()
+                    """,
+                    user_id, content, version,
+                )
+            logger.debug("用户指令保存完成", user_id=user_id, version=version)
+            return True
+        except Exception as e:
+            logger.error("保存用户指令失败", user_id=user_id, error=str(e))
+            return False
+
+    async def delete_user_instruction(self, user_id: str) -> bool:
+        try:
+            pool = await get_db_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    DELETE FROM user_instructions WHERE user_id = $1
+                    """,
+                    user_id,
+                )
+            logger.debug("用户指令删除完成", user_id=user_id)
+            return True
+        except Exception as e:
+            logger.error("删除用户指令失败", user_id=user_id, error=str(e))
+            return False
+
 
 _db_service: Optional[DbService] = None
 

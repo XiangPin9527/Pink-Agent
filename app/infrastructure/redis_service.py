@@ -9,6 +9,9 @@ logger = get_logger(__name__)
 CHECKPOINT_TTL_SECONDS = 3 * 24 * 60 * 60
 
 
+USER_INSTRUCTION_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
 class RedisService:
     REDIS_KEY_SUMMARY_PREFIX = "stm_summary"
     REDIS_KEY_MSG_COUNT_PREFIX = "stm_msg_count"
@@ -16,6 +19,7 @@ class RedisService:
     REDIS_KEY_LTM_LAST_EXTRACT_PREFIX = "ltm_last_extract"
     REDIS_KEY_CP_PREFIX = "cp"
     REDIS_KEY_CP_IDS_PREFIX = "cp_ids"
+    REDIS_KEY_UI_PREFIX = "ui"
 
     def _get_summary_key(self, session_id: str) -> str:
         return f"{self.REDIS_KEY_SUMMARY_PREFIX}:{session_id}"
@@ -36,6 +40,9 @@ class RedisService:
 
     def _get_cp_ids_key(self, thread_id: str, ns: str = "") -> str:
         return f"{self.REDIS_KEY_CP_IDS_PREFIX}:{thread_id}:{ns}"
+
+    def _get_ui_key(self, user_id: str) -> str:
+        return f"{self.REDIS_KEY_UI_PREFIX}:{user_id}"
 
     async def get_short_term_summary(self, session_id: str) -> str:
         try:
@@ -256,6 +263,55 @@ class RedisService:
         except Exception as e:
             logger.warning("获取RAG任务状态失败", task_id=task_id, error=str(e))
             return None
+
+    async def get_user_instruction(self, user_id: str) -> dict | None:
+        try:
+            r = await get_redis()
+            data = await r.get(self._get_ui_key(user_id))
+            if data:
+                raw = data if isinstance(data, str) else data.decode()
+                return orjson.loads(raw)
+            return None
+        except Exception as e:
+            logger.warning("获取用户指令失败", user_id=user_id, error=str(e))
+            return None
+
+    async def set_user_instruction(
+        self, user_id: str, content: str, version: int
+    ) -> bool:
+        try:
+            r = await get_redis()
+            payload = {
+                "content": content,
+                "version": version,
+            }
+            await r.set(
+                self._get_ui_key(user_id),
+                orjson.dumps(payload).decode("utf-8"),
+                ex=USER_INSTRUCTION_TTL_SECONDS,
+            )
+            return True
+        except Exception as e:
+            logger.error("设置用户指令失败", user_id=user_id, error=str(e))
+            return False
+
+    async def delete_user_instruction(self, user_id: str) -> bool:
+        try:
+            r = await get_redis()
+            await r.delete(self._get_ui_key(user_id))
+            return True
+        except Exception as e:
+            logger.error("删除用户指令失败", user_id=user_id, error=str(e))
+            return False
+
+    async def get_user_instruction_ttl(self, user_id: str) -> int:
+        try:
+            r = await get_redis()
+            ttl = await r.ttl(self._get_ui_key(user_id))
+            return ttl if ttl > 0 else 0
+        except Exception as e:
+            logger.warning("获取用户指令TTL失败", user_id=user_id, error=str(e))
+            return 0
 
 
 _redis_service: Optional[RedisService] = None

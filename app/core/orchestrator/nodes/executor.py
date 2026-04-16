@@ -171,6 +171,14 @@ async def executor(state: OrchestratorState) -> OrchestratorState:
             recent_history=recent_history_text,
         )
 
+        from app.core.memory.user_instruction import get_user_instruction_service
+        user_instruction_service = get_user_instruction_service()
+        user_instruction = await user_instruction_service.get(user_id)
+        if user_instruction:
+            user_instruction_text = user_instruction_service.format_for_system_prompt(user_instruction)
+            if user_instruction_text:
+                system_prompt += f"\n\n{user_instruction_text}"
+
         from app.core.llm.service import get_llm_service
 
         llm = get_llm_service().get_model()

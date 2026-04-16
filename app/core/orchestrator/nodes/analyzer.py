@@ -116,6 +116,14 @@ async def analyzer(state: OrchestratorState) -> OrchestratorState:
     if stm_summary:
         system_prompt += f"\n\n【之前对话的简短摘要】:\n{stm_summary}\n"
 
+    from app.core.memory.user_instruction import get_user_instruction_service
+    user_instruction_service = get_user_instruction_service()
+    user_instruction = await user_instruction_service.get(user_id)
+    if user_instruction:
+        user_instruction_text = user_instruction_service.format_for_system_prompt(user_instruction)
+        if user_instruction_text:
+            system_prompt += f"\n{user_instruction_text}\n"
+
     msg_count = await get_msg_count(session_id)
     if stm_summary:
         # 有摘要时优先使用 Redis 计数器；计数器异常时回退到默认窗口。
