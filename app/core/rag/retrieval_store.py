@@ -51,7 +51,6 @@ class RetrievalStore:
             table_name=self.TABLE_NAME,
             vector_size=self.VECTOR_SIZE,
         )
-
         self._store = await PGVectorStore.create(
             engine=self._engine,
             table_name=self.TABLE_NAME,

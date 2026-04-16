@@ -23,6 +23,7 @@
   - 保留策略：始终保留最新 20 条不压缩
 - **长期记忆**: PostgreSQL + pgvector 存储用户画像、偏好、项目背景
 - **异步提取**: RabbitMQ 驱动，每 10 条用户消息触发一次长期记忆提取
+- **用户指令记忆**: Redis (TTL 7天) + PostgreSQL 双级存储，支持用户定制化约束
 
 ### 两级 Checkpoint
 - **Redis 同步写入**: 微秒级响应，保障快速读取
@@ -125,6 +126,7 @@ python scripts/init_db.py
 - `store` 表（长期记忆原始数据）
 - `store_vectors` 表（长期记忆向量索引，1024 维）
 - `code_chunks` / `projects` 表（RAG 代码块存储）
+- `user_instructions` 表（用户指令记忆存储）
 - 相关索引
 
 ### 5. 启动服务
@@ -235,6 +237,37 @@ MQ Worker:
 - **两级缓存**: Redis 同步写入 (快速读取) + PostgreSQL 异步持久化 (持久保障)
 - **存储内容**: 完整 `OrchestratorState`，包含 messages、execution_plan 等
 - **作用**: 支持对话中断恢复，保障状态不丢失
+
+### 用户指令记忆
+
+用户可以通过 API 设置个性化约束指令，大模型会在每次对话中严格遵循这些约束。
+
+**使用场景**：
+- 代码风格定制（如：必须添加详细注释、使用中文注释）
+- 输出格式要求（如：使用 Markdown 格式、分点说明）
+- 行为约束（如：回复要简洁、避免冗余）
+
+**存储策略**：
+- **Redis (L1)**: TTL 7天，快速读写
+- **PostgreSQL (L2)**: 持久化存储，Redis 过期后自动回填
+- **缓存失效**: Redis 过期自动删除，DB 不受影响；更新时版本号 +1
+
+**注入位置**：
+用户指令会在以下节点的 System Prompt 中注入：
+- `Simple Handler` - 简单任务处理
+- `Analyzer` - 复杂任务分析规划
+- `Executor` - 任务执行
+
+**注入格式**：
+
+```
+## 用户个性化约束（严格遵守）
+
+{用户指令内容}
+
+---
+以上是用户对该次对话的个性化约束，请严格按照上述约束生成回复。
+```
 
 ### 数据流
 
@@ -365,6 +398,35 @@ curl -N -X POST http://localhost:8000/v1/agent/chat/stream -H "Content-Type: app
 }
 ```
 
+### 用户指令接口
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/v1/user/instruction` | POST | 设置用户指令 |
+| `/v1/user/instruction/{user_id}` | GET | 获取用户指令 |
+| `/v1/user/instruction/{user_id}` | DELETE | 删除用户指令 |
+| `/v1/user/instruction/{user_id}/exists` | GET | 检查是否存在 |
+
+**设置用户指令请求体：**
+
+```json
+{
+  "user_id": "user_123",
+  "instruction_content": "代码风格要求：\n1. 必须添加详细的注释\n2. 使用中文注释\n3. 变量命名采用驼峰式"
+}
+```
+
+**获取用户指令响应：**
+
+```json
+{
+  "user_id": "user_123",
+  "instruction_content": "代码风格要求：\n1. 必须添加详细的注释\n2. 使用中文注释\n3. 变量命名采用驼峰式",
+  "version": 1,
+  "updated_at": "2024-01-01T00:00:00Z"
+}
+```
+
 ### 其他接口
 
 | 接口 | 方法 | 说明 |
@@ -389,11 +451,13 @@ ai-agent-engine/
 │   │   │   ├── chat_request.py          # 对话请求模型
 │   │   │   ├── chat_response.py         # 对话响应模型
 │   │   │   ├── audit_request.py         # 审计请求模型
-│   │   │   └── rag_request.py           # RAG 请求模型
+│   │   │   ├── rag_request.py           # RAG 请求模型
+│   │   │   └── user_instruction_request.py  # 用户指令请求模型
 │   │   └── v1/
 │   │       ├── __init__.py
 │   │       ├── agent.py                 # 对话/审计接口
 │   │       ├── rag.py                  # RAG 接口
+│   │       ├── user_instruction.py     # 用户指令接口
 │   │       └── health.py                # 健康检查
 │   ├── core/
 │   │   ├── agent/
@@ -405,6 +469,7 @@ ai-agent-engine/
 │   │   ├── memory/
 │   │   │   ├── loader.py                # 长期记忆加载器
 │   │   │   ├── shortmem.py              # 短期记忆压缩 (Redis)
+│   │   │   ├── user_instruction.py      # 用户指令记忆服务
 │   │   │   ├── checkpoint/
 │   │   │   │   ├── __init__.py
 │   │   │   │   └── saver.py             # Checkpoint 两级缓存 (Redis + PG)

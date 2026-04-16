@@ -34,6 +34,20 @@ CREATE INDEX IF NOT EXISTS idx_checkpoints_created
     ON checkpoints(thread_id, created_at DESC);
 """
 
+USER_INSTRUCTION_DDL = """
+CREATE TABLE IF NOT EXISTS user_instructions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id VARCHAR(255) NOT NULL UNIQUE,
+    instruction_content TEXT NOT NULL,
+    version INT NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_instructions_user_id
+    ON user_instructions(user_id);
+"""
+
 
 async def init_database():
     import asyncpg
@@ -53,6 +67,10 @@ async def init_database():
 
         await conn.execute(CHECKPOINT_INDEX_DDL)
         logger.info("Checkpoint 索引创建完成")
+
+        async with conn.transaction():
+            await conn.execute(USER_INSTRUCTION_DDL)
+        logger.info("User Instructions 表创建完成")
 
         logger.info("code_vectors 表将由 PGVectorStore 在应用启动时自动创建")
     finally:
